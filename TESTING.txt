@@ -1,0 +1,26 @@
+Kodi V1 — manual end-to-end checklist
+
+Prerequisites
+- Docker: `docker compose -f infra/docker-compose.yml up -d` (Qdrant).
+- Backend: copy backend/.env.example to backend/.env and fill ANTHROPIC_API_KEY, OPENAI_API_KEY, optional BRAVE_API_KEY.
+- Run API: from backend/, `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+- Android: set sdk.dir in android/local.properties; add PICOVOICE_ACCESS_KEY for wake word (built-in JARVIS keyword in code). Use HTTPS tunnel (e.g. ngrok) or LAN HTTPS to reach the backend.
+
+Device pairing
+1) POST /v1/devices/register (optional header X-Kodi-Setup-Token if KODI_SETUP_TOKEN is set). Store device_id and api_secret in the app (onboarding does this).
+2) App signs every authenticated request: HMAC-SHA256(secret, "{unix_ts}\n{METHOD}\n{path}\n{sha256_hex(body)}").
+
+Core flows
+- Health: GET /v1/health without auth.
+- Session: POST /v1/sessions with HMAC body "{}".
+- Voice: POST /v1/sessions/{id}/audio with Content-Type audio/wav and raw WAV (16 kHz mono PCM16) body; handle device_action by running tools on-device, then POST /v1/sessions/{id}/tool-result until status done.
+
+On-device checks
+- After onboarding, start the foreground service; trigger wake word or “Speak command now”.
+- SMS: “Text [contact] …” with SMS permission granted.
+- Call: “Call [contact]” with phone permission.
+- WhatsApp: requires WhatsApp installed; UI varies by version — expect occasional selector updates (V1.1).
+
+Security spot-check
+- Contact names resolved locally; tool results may still include numbers returned to your self-hosted backend.
+- Optional certificate pins in onboarding (host|sha256/…).

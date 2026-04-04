@@ -1,0 +1,17 @@
+# Kodi V1 — local/VPS stack: vector DB for Mem0 (used by FastAPI backend via mem0ai SDK).
+# Run from repo root: docker compose -f infra/docker-compose.yml up -d
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.12.5
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+
+volumes:
+  qdrant_data:

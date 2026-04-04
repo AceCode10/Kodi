@@ -1,0 +1,3 @@
+## Copy to local.properties (not committed). Android Studio fills sdk.dir automatically.
+# sdk.dir=C\:\\Users\\You\\AppData\\Local\\Android\\Sdk
+PICOVOICE_ACCESS_KEY=your_picovoice_access_key

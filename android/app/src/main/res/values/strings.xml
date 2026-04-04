@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Kodi</string>
+    <string name="notif_listening">Kodi is listening for “Hey Kodi”</string>
+    <string name="accessibility_description">Kodi uses accessibility to complete tasks you request by voice in supported apps.</string>
+</resources>

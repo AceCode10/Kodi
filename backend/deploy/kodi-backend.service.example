@@ -1,0 +1,15 @@
+[Unit]
+Description=Kodi FastAPI backend
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=kodi
+Group=kodi
+WorkingDirectory=/opt/kodi/backend
+EnvironmentFile=/etc/kodi/backend.env
+ExecStart=/opt/kodi/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
