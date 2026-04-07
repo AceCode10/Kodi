@@ -1,0 +1,17 @@
+# Kodi backend — replace YOUR_DOMAIN with your actual domain (e.g. kodi.example.com)
+YOUR_DOMAIN {
+    reverse_proxy localhost:8000
+
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+    }
+
+    log {
+        output file /var/log/caddy/kodi_access.log
+        format json
+    }
+}

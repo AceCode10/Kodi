@@ -14,6 +14,8 @@ Core flows
 - Health: GET /v1/health without auth.
 - Session: POST /v1/sessions with HMAC body "{}".
 - Voice: POST /v1/sessions/{id}/audio with Content-Type audio/wav and raw WAV (16 kHz mono PCM16) body; handle device_action by running tools on-device, then POST /v1/sessions/{id}/tool-result until status done.
+- Text (on-device STT fallback): POST /v1/sessions/{id}/text with HMAC JSON {"text":"..."}; same agent + device_action loop as /audio.
+- Forget all: first utterance triggers a confirmation prompt; say "confirm delete everything" within three minutes to wipe Mem0 for that device.
 
 On-device checks
 - After onboarding, start the foreground service; trigger wake word or “Speak command now”.

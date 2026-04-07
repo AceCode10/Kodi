@@ -9,7 +9,7 @@ import retrofit2.http.Path
 
 interface KodiApi {
     @GET("/v1/health")
-    suspend fun health(): Map<String, String>
+    suspend fun health(): Map<String, Any>
 
     @POST("/v1/devices/register")
     suspend fun register(
@@ -24,6 +24,12 @@ interface KodiApi {
     suspend fun postAudio(
         @Path("sessionId") sessionId: String,
         @Body audio: RequestBody,
+    ): CommandDto
+
+    @POST("/v1/sessions/{sessionId}/text")
+    suspend fun postTranscript(
+        @Path("sessionId") sessionId: String,
+        @Body body: TranscriptBody,
     ): CommandDto
 
     @POST("/v1/sessions/{sessionId}/tool-result")

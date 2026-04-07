@@ -2,6 +2,7 @@ import io
 import wave
 from pathlib import Path
 
+from fastapi import HTTPException, status
 from openai import OpenAI
 
 from .config import get_settings
@@ -21,14 +22,14 @@ def _parse_wav_bytes(data: bytes) -> tuple[bytes, int, int, int]:
 def transcribe_wav(wav_bytes: bytes) -> str:
     settings = get_settings()
     if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY not configured")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "STT unavailable: OPENAI_API_KEY not configured")
     _pcm, channels, _sw, rate = _parse_wav_bytes(wav_bytes)
     if channels != 1:
         raise ValueError("Expected mono WAV")
     if rate != 16000:
         # Whisper accepts various rates; OpenAI API accepts multiple formats
         pass
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = OpenAI(api_key=settings.openai_api_key, timeout=settings.llm_timeout_seconds)
     bio = io.BytesIO(wav_bytes)
     bio.name = "command.wav"
     tr = client.audio.transcriptions.create(model="whisper-1", file=bio, response_format="text")

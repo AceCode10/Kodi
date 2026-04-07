@@ -22,6 +22,7 @@ import ai.kodi.app.accessibility.DeviceToolExecutor
 import ai.kodi.app.data.CommandDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -39,7 +40,12 @@ class KodiVoiceService : Service() {
     private val scope = CoroutineScope(job + Dispatchers.Default)
     private var listenThread: Thread? = null
     @Volatile private var running = false
-    @Volatile private var commandInProgress = false
+
+    /** Ask Porcupine loop to release AudioRecord so another path can open the mic. */
+    @Volatile private var requestMicRelease = false
+    private val micGate = Any()
+    private var activePipelineJob: Job? = null
+
     private var porcupine: Porcupine? = null
     private lateinit var tts: TtsManager
 
@@ -70,13 +76,13 @@ class KodiVoiceService : Service() {
             ACTION_MANUAL_COMMAND -> {
                 startForegroundIfNeeded()
                 scope.launch {
-                    commandInProgress = true
+                    awaitMicFreeFromWakeLoop()
                     try {
                         tts.stop()
                         val pcm = recordCommandPcm()
                         runPipeline(pcm)
-                    } finally {
-                        commandInProgress = false
+                    } catch (e: Exception) {
+                        Log.e(TAG, "manual command", e)
                     }
                 }
                 return START_STICKY
@@ -88,6 +94,21 @@ class KodiVoiceService : Service() {
             startPorcupineLoop()
         }
         return START_STICKY
+    }
+
+    /** Cancel any active pipeline job and wait briefly for mic to be released by the wake loop. */
+    private suspend fun awaitMicFreeFromWakeLoop() = withContext(Dispatchers.IO) {
+        activePipelineJob?.cancel()
+        activePipelineJob = null
+        if (listenThread?.isAlive != true) return@withContext
+        synchronized(micGate) { requestMicRelease = true }
+        val deadline = System.currentTimeMillis() + 4_000
+        while (System.currentTimeMillis() < deadline) {
+            synchronized(micGate) { if (!requestMicRelease) return@withContext }
+            kotlinx.coroutines.delay(50)
+        }
+        Log.w(TAG, "Timeout waiting for wake AudioRecord release")
+        synchronized(micGate) { requestMicRelease = false }
     }
 
     private fun startForegroundIfNeeded() {
@@ -117,45 +138,80 @@ class KodiVoiceService : Service() {
         }
     }
 
+    private fun buildWakeAudioRecord(frameLen: Int): AudioRecord {
+        val minBuf = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        return AudioRecord(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            maxOf(minBuf, frameLen * 2),
+        )
+    }
+
+    private fun safeStopRelease(rec: AudioRecord?) {
+        if (rec == null) return
+        try {
+            rec.stop()
+        } catch (_: Exception) {}
+        try {
+            rec.release()
+        } catch (_: Exception) {}
+    }
+
     private fun startPorcupineLoop() {
         val p = porcupine ?: run {
             Log.w(TAG, "No Porcupine key — open the app and use “Speak command”")
             return
         }
-        listenThread = Thread {
-            val frameLen = p.frameLength
-            val minBuf = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            )
-            val rec = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuf, frameLen * 2),
-            )
-            rec.startRecording()
-            val frame = ShortArray(frameLen)
+        val frameLen = p.frameLength
+        val frame = ShortArray(frameLen)
+        listenThread = Thread({
+            var rec: AudioRecord? = null
             try {
                 while (running && !Thread.currentThread().isInterrupted) {
-                    if (commandInProgress) {
-                        Thread.sleep(30)
+                    synchronized(micGate) {
+                        if (requestMicRelease) {
+                            safeStopRelease(rec)
+                            rec = null
+                            requestMicRelease = false
+                        }
+                        if (rec == null) {
+                            rec = buildWakeAudioRecord(frameLen)
+                            rec.startRecording()
+                        }
+                    }
+                    val activeRec = rec ?: continue
+                    val read = try {
+                        activeRec.read(frame, 0, frame.size)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "read", e)
+                        synchronized(micGate) {
+                            safeStopRelease(rec)
+                            rec = null
+                        }
+                        Thread.sleep(100)
                         continue
                     }
-                    val read = rec.read(frame, 0, frame.size)
                     if (read <= 0) continue
                     if (p.process(frame) >= 0) {
                         Log.i(TAG, "Wake word")
-                        scope.launch {
-                            commandInProgress = true
+                        synchronized(micGate) {
+                            safeStopRelease(rec)
+                            rec = null
+                        }
+                        activePipelineJob?.cancel()
+                        activePipelineJob = scope.launch {
                             try {
                                 tts.stop()
                                 val pcm = recordCommandPcm()
                                 runPipeline(pcm)
-                            } finally {
-                                commandInProgress = false
+                            } catch (e: Exception) {
+                                Log.e(TAG, "pipeline", e)
                             }
                         }
                     }
@@ -163,12 +219,12 @@ class KodiVoiceService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "porcupine loop", e)
             } finally {
-                try {
-                    rec.stop()
-                } catch (_: Exception) {}
-                rec.release()
+                synchronized(micGate) {
+                    safeStopRelease(rec)
+                    rec = null
+                }
             }
-        }.also { it.start() }
+        }, "KodiWakeMic").also { it.start() }
     }
 
     private suspend fun recordCommandPcm(): ByteArray = withContext(Dispatchers.IO) {
@@ -214,8 +270,7 @@ class KodiVoiceService : Service() {
                 }
             }
         } finally {
-            rec.stop()
-            rec.release()
+            safeStopRelease(rec)
         }
         return@withContext out.toByteArray()
     }
@@ -226,7 +281,7 @@ class KodiVoiceService : Service() {
         val repo = (application as KodiApplication).repository
         val reply = withContext(Dispatchers.IO) {
             try {
-                repo.runVoiceCommand(wav) { cmd: CommandDto ->
+                repo.runVoiceCommandWithSttFallback(wav, applicationContext) { cmd: CommandDto ->
                     DeviceToolExecutor.execute(this@KodiVoiceService, cmd)
                 }
             } catch (e: SocketTimeoutException) {

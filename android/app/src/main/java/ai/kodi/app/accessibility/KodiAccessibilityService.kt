@@ -120,6 +120,50 @@ class KodiAccessibilityService : AccessibilityService() {
         return null
     }
 
+    /** Best-effort visible text from the active window UI tree (browser page, etc.). */
+    fun collectVisibleText(root: AccessibilityNodeInfo?, maxChars: Int = 8000): String {
+        if (root == null) return ""
+        val sb = StringBuilder()
+        val q = ArrayDeque<AccessibilityNodeInfo>()
+        q.add(root)
+        while (q.isNotEmpty() && sb.length < maxChars) {
+            val n = q.removeFirst()
+            n.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                sb.append(it).append('\n')
+            }
+            n.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                sb.append(it).append('\n')
+            }
+            for (i in 0 until n.childCount) {
+                n.getChild(i)?.let { q.add(it) }
+            }
+        }
+        return sb.toString().take(maxChars).trim()
+    }
+
+    suspend fun scrollNode(direction: String, node: AccessibilityNodeInfo? = null): Boolean =
+        withContext(Dispatchers.Main) {
+            val action = if (direction.lowercase() == "down" || direction.lowercase() == "forward") {
+                AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            } else {
+                AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            }
+            val target = node ?: findScrollable(rootInActiveWindow) ?: return@withContext false
+            target.performAction(action)
+        }
+
+    fun findScrollable(root: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (root == null) return null
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        while (queue.isNotEmpty()) {
+            val n = queue.removeFirst()
+            if (n.isScrollable) return n
+            for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
+        }
+        return null
+    }
+
     suspend fun typeIntoFocusedField(text: String): Boolean = withContext(Dispatchers.Main) {
         val root = rootInActiveWindow ?: return@withContext false
         val field = findEditable(root) ?: return@withContext false

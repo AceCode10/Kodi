@@ -9,6 +9,7 @@ venv/
 backend/data/
 *.egg-info/
 .pytest_cache/
+backend/.pytest_cache/
 
 # Android / Gradle
 android/.gradle/

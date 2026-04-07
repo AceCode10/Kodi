@@ -8,8 +8,10 @@ Backend (development)
 5. docker compose -f ../infra/docker-compose.yml up -d
 6. uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
+Backend tests (optional): pip install -r requirements-dev.txt && python -m pytest (from backend/)
+
 Android
-1. Open the android/ folder in Android Studio (Gradle will download the wrapper).
+1. Open the android/ folder in Android Studio, or run gradlew.bat assembleDebug from android/ (JDK required).
 2. Copy local.properties.example to local.properties; set sdk.dir and PICOVOICE_ACCESS_KEY.
 3. Run on a device with USB debugging; complete onboarding (HTTPS URL must match your backend).
 

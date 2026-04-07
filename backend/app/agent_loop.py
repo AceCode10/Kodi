@@ -1,4 +1,6 @@
+import concurrent.futures
 import logging
+import time
 from typing import Any
 
 import anthropic
@@ -45,6 +47,32 @@ def _block_to_dict(block: Any) -> dict[str, Any]:
     return {"type": "text", "text": ""}
 
 
+def _execute_server_tool_impl(
+    name: str,
+    tool_input: dict[str, Any],
+    *,
+    transcript: str,
+    user_id: str,
+) -> str:
+    if name == "search_web":
+        q = tool_input.get("query") or ""
+        deep = bool(tool_input.get("deep"))
+        return search_web(q, deep, transcript)
+    if name == "remember":
+        content = tool_input.get("content") or ""
+        from .memory_service import get_memory
+
+        mem = get_memory()
+        if mem is False:
+            return "Memory unavailable."
+        mem.add(content, user_id=user_id, infer=False)
+        return "Stored."
+    if name == "recall":
+        q = tool_input.get("query") or ""
+        return memory_search(user_id, q, limit=5) or "No matching memories."
+    return "Unknown tool."
+
+
 def _execute_server_tool(
     name: str,
     tool_input: dict[str, Any],
@@ -52,27 +80,24 @@ def _execute_server_tool(
     transcript: str,
     user_id: str,
 ) -> str:
+    settings = get_settings()
+    timeout = max(1.0, settings.tool_timeout_seconds)
     try:
-        if name == "search_web":
-            q = tool_input.get("query") or ""
-            deep = bool(tool_input.get("deep"))
-            return search_web(q, deep, transcript)
-        if name == "remember":
-            content = tool_input.get("content") or ""
-            from .memory_service import get_memory
-
-            mem = get_memory()
-            if mem is False:
-                return "Memory unavailable."
-            mem.add(content, user_id=user_id, infer=False)
-            return "Stored."
-        if name == "recall":
-            q = tool_input.get("query") or ""
-            return memory_search(user_id, q, limit=5) or "No matching memories."
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(
+                _execute_server_tool_impl,
+                name,
+                tool_input,
+                transcript=transcript,
+                user_id=user_id,
+            )
+            return fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning("server tool %s exceeded %.1fs", name, timeout)
+        return f"Tool timed out after {int(timeout)} seconds."
     except Exception as exc:
         logger.exception("server tool %s failed", name)
         return f"Tool error: {exc!s}."
-    return "Unknown tool."
 
 
 def run_agent_step(state: Any) -> dict[str, Any]:
@@ -129,7 +154,8 @@ def run_agent_step(state: Any) -> dict[str, Any]:
                     continue
                 tool_seen = True
                 filtered.append(_block_to_dict(b))
-        state.claude_messages.append({"role": "assistant", "content": filtered})
+        with state.lock:
+            state.claude_messages.append({"role": "assistant", "content": filtered})
 
         name = _tool_name(block)
         tid = _tool_id(block)
@@ -137,6 +163,7 @@ def run_agent_step(state: Any) -> dict[str, Any]:
 
         if name in DEVICE_TOOL_NAMES:
             state.tools_used_this_command += 1
+            state.pending_device_since = time.time()
             state.pending_device_tool = {"tool_use_id": tid, "name": name, "input": inp}
             return {
                 "status": "device_action",
@@ -153,53 +180,61 @@ def run_agent_step(state: Any) -> dict[str, Any]:
                 transcript=state.last_transcript,
                 user_id=state.device_id,
             )
+            truncated_out = out[:6000] if len(out) > 6000 else out
+            with state.lock:
+                state.claude_messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid, "content": truncated_out}],
+                    }
+                )
+            continue
+
+        with state.lock:
             state.claude_messages.append(
                 {
                     "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": tid, "content": out}],
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tid,
+                            "content": f"Unknown tool {name}.",
+                            "is_error": True,
+                        }
+                    ],
                 }
             )
-            continue
 
+    return {"status": "error", "message": "Too many agent steps."}
+
+
+def start_command(state: Any, transcript: str, memory_block: str) -> None:
+    with state.lock:
+        state.last_transcript = transcript
+        state.tools_used_this_command = 0
+        state.pending_device_tool = None
+        state.pending_device_since = None
+        user_body = transcript
+        if memory_block:
+            user_body = f"[Context from memory]\n{memory_block}\n\nUser said: {transcript}"
+        state.claude_messages = [{"role": "user", "content": user_body}]
+
+
+def apply_tool_result(state: Any, tool_use_id: str, result_text: str, is_error: bool = False) -> None:
+    truncated = result_text[:6000] if len(result_text) > 6000 else result_text
+    with state.lock:
+        state.pending_device_tool = None
+        state.pending_device_since = None
         state.claude_messages.append(
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "tool_result",
-                        "tool_use_id": tid,
-                        "content": f"Unknown tool {name}.",
-                        "is_error": True,
+                        "tool_use_id": tool_use_id,
+                        "content": truncated,
+                        "is_error": is_error,
                     }
                 ],
             }
         )
-
-    return {"status": "error", "message": "Too many agent steps."}
-
-
-def start_command(state: Any, transcript: str, memory_block: str) -> None:
-    state.last_transcript = transcript
-    state.tools_used_this_command = 0
-    state.pending_device_tool = None
-    user_body = transcript
-    if memory_block:
-        user_body = f"[Context from memory]\n{memory_block}\n\nUser said: {transcript}"
-    state.claude_messages = [{"role": "user", "content": user_body}]
-
-
-def apply_tool_result(state: Any, tool_use_id: str, result_text: str, is_error: bool = False) -> None:
-    state.pending_device_tool = None
-    state.claude_messages.append(
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": result_text,
-                    "is_error": is_error,
-                }
-            ],
-        }
-    )

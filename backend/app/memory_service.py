@@ -91,11 +91,12 @@ def memory_forget_last(user_id: str) -> str:
     if mem is False:
         return "Memory is offline."
     try:
-        out = mem.search("", user_id=user_id, limit=1)
+        out = mem.get_all(user_id=user_id)
         results = out.get("results") or []
         if not results:
             return "Nothing to forget."
-        mid = results[0].get("id")
+        sorted_results = sorted(results, key=lambda r: r.get("created_at") or "", reverse=True)
+        mid = sorted_results[0].get("id")
         if mid:
             mem.delete(mid)
             return "Forgot the last memory."

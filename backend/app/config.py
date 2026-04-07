@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 15.0
     max_tools_per_command: int = 4
 
+    # Max device registrations per client IP per rolling hour (0 = unlimited)
+    register_rate_limit_per_hour: int = 20
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -21,6 +21,10 @@ Bind addresses are `127.0.0.1` so Qdrant is not exposed publicly; only processes
 
 Copy `backend/.env.example` to `/etc/kodi/backend.env` (or similar) on the server. Never commit real keys.
 
+## Operations
+
+See [OPS_SESSIONS_AND_LOGS.txt](OPS_SESSIONS_AND_LOGS.txt) for session scaling, tool timeouts, and logging notes.
+
 Required for full V1:
 
 - `ANTHROPIC_API_KEY`

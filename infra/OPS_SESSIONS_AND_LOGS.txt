@@ -1,0 +1,10 @@
+Sessions (FastAPI)
+- Session state lives in process memory (app.session_manager.sessions). Use a single uvicorn worker (default) or sticky sessions if you scale horizontally.
+- For multiple workers, add Redis (or similar) for session storage before enabling --workers > 1.
+
+Device tool timing
+- Server tools honor TOOL_TIMEOUT_SECONDS (default 10s) via a thread pool in agent_loop.
+- If the phone posts /tool-result later than TOOL_TIMEOUT_SECONDS after a device_action was issued, the result is treated as a timeout error for the model.
+
+Log retention
+- LOG_RETENTION_DAYS in .env is reserved for future log rotation integration; use journald/logrotate on the VPS for now.

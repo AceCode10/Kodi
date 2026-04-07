@@ -1,0 +1,24 @@
+[Unit]
+Description=Kodi Backend API
+After=network.target qdrant.service
+Wants=qdrant.service
+
+[Service]
+Type=simple
+User=kodi
+Group=kodi
+WorkingDirectory=/opt/kodi/backend
+EnvironmentFile=/etc/kodi/backend.env
+ExecStart=/opt/kodi/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kodi-backend
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/kodi/backend/data
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,7 @@ package ai.kodi.app.data
 
 import android.content.Context
 import ai.kodi.app.BuildConfig
+import ai.kodi.app.voice.OnDeviceSpeech
 import com.google.gson.Gson
 import okhttp3.CertificatePinner
 import okhttp3.MediaType.Companion.toMediaType
@@ -72,7 +73,7 @@ class KodiRepository(private val context: Context) {
 
     suspend fun healthCheck(): Result<String> = runCatching {
         val h = apiPublic().health()
-        h["status"] ?: "ok"
+        h["status"]?.toString() ?: "ok"
     }
 
     suspend fun registerDevice(setupToken: String?): Result<RegisterDto> = runCatching {
@@ -91,26 +92,84 @@ class KodiRepository(private val context: Context) {
         prefs.clearSession()
     }
 
-    /**
-     * Sends WAV (16-bit mono PCM) and runs device-tool loop until [CommandDto.status] is done or error.
-     */
-    suspend fun runVoiceCommand(wavBytes: ByteArray, toolHandler: suspend (CommandDto) -> String): String {
+    private suspend fun runToolLoop(
+        session: String,
+        first: CommandDto,
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
+        val api = apiAuthed()
+        var cmd = first
+        while (cmd.status == "device_action") {
+            val toolId = cmd.toolUseId ?: break
+            val resultText = toolHandler(cmd)
+            cmd = api.postToolResult(
+                session,
+                ToolResultDto(toolUseId = toolId, content = resultText, isError = false),
+            )
+        }
+        return when (cmd.status) {
+            "done" -> cmd.assistantText.orEmpty()
+            else -> cmd.message ?: "I'm having trouble connecting. Try again in a moment."
+        }
+    }
+
+    private suspend fun runFromAudioBytes(wavBytes: ByteArray, toolHandler: suspend (CommandDto) -> String): String {
+        val session = ensureSession()
+        val api = apiAuthed()
         return try {
-            val session = ensureSession()
-            val api = apiAuthed()
-            var cmd = api.postAudio(session, wavBytes.toRequestBody("audio/wav".toMediaType()))
-            while (cmd.status == "device_action") {
-                val toolId = cmd.toolUseId ?: break
-                val resultText = toolHandler(cmd)
-                cmd = api.postToolResult(
-                    session,
-                    ToolResultDto(toolUseId = toolId, content = resultText, isError = false),
-                )
-            }
-            when (cmd.status) {
-                "done" -> cmd.assistantText.orEmpty()
-                else -> cmd.message ?: "I'm having trouble connecting. Try again in a moment."
-            }
+            val first = api.postAudio(session, wavBytes.toRequestBody("audio/wav".toMediaType()))
+            runToolLoop(session, first, toolHandler)
+        } catch (e: HttpException) {
+            if (e.code() == 404) {
+                prefs.clearSession()
+                val newSession = ensureSession()
+                val first = api.postAudio(newSession, wavBytes.toRequestBody("audio/wav".toMediaType()))
+                runToolLoop(newSession, first, toolHandler)
+            } else throw e
+        }
+    }
+
+    private suspend fun runFromTranscript(text: String, toolHandler: suspend (CommandDto) -> String): String {
+        val session = ensureSession()
+        val api = apiAuthed()
+        return try {
+            val first = api.postTranscript(session, TranscriptBody(text = text))
+            runToolLoop(session, first, toolHandler)
+        } catch (e: HttpException) {
+            if (e.code() == 404) {
+                prefs.clearSession()
+                val newSession = ensureSession()
+                val first = api.postTranscript(newSession, TranscriptBody(text = text))
+                runToolLoop(newSession, first, toolHandler)
+            } else throw e
+        }
+    }
+
+    /**
+     * Primary path: cloud STT + agent. On network/HTTP failure, one-shot on-device [SpeechRecognizer] then POST /text.
+     */
+    suspend fun runVoiceCommandWithSttFallback(
+        wavBytes: ByteArray,
+        appContext: Context,
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
+        return try {
+            runFromAudioBytes(wavBytes, toolHandler)
+        } catch (e: HttpException) {
+            if (e.code() in 400..599) fallbackLocalStt(appContext, toolHandler)
+            else "I'm having trouble connecting. Try again in a moment."
+        } catch (_: IOException) {
+            fallbackLocalStt(appContext, toolHandler)
+        }
+    }
+
+    private suspend fun fallbackLocalStt(appContext: Context, toolHandler: suspend (CommandDto) -> String): String {
+        val text = OnDeviceSpeech.transcribeOrNull(appContext)
+        if (text.isNullOrBlank()) {
+            return "I'm having trouble connecting. Try again in a moment."
+        }
+        return try {
+            runFromTranscript(text, toolHandler)
         } catch (_: HttpException) {
             "I'm having trouble connecting. Try again in a moment."
         } catch (_: IOException) {

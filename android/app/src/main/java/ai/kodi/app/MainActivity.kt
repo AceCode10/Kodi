@@ -20,7 +20,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,6 +36,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ai.kodi.app.data.KodiPrefs
 import ai.kodi.app.voice.KodiVoiceService
@@ -76,7 +81,7 @@ private fun KodiRoot() {
                         if (status == TextToSpeech.SUCCESS) {
                             tts?.language = java.util.Locale.US
                             tts?.speak(
-                                "I'm ready. Say Hey Kodi to get started.",
+                                "I'm ready. Tap Speak command to get started.",
                                 TextToSpeech.QUEUE_FLUSH,
                                 null,
                                 "ready",
@@ -97,6 +102,7 @@ private fun OnboardingPermissions(onNext: () -> Unit) {
             add(Manifest.permission.RECORD_AUDIO)
             add(Manifest.permission.READ_CONTACTS)
             add(Manifest.permission.SEND_SMS)
+            add(Manifest.permission.READ_SMS)
             add(Manifest.permission.CALL_PHONE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.POST_NOTIFICATIONS)
@@ -181,7 +187,11 @@ private fun OnboardingBackend(prefs: KodiPrefs, onNext: () -> Unit) {
         ) {
             Text("Test connection")
         }
-        if (status.isNotEmpty()) Text(status, style = MaterialTheme.typography.bodySmall)
+        if (status.isNotEmpty()) Text(
+            status,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (status.startsWith("Connected")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+        )
         Button(
             onClick = {
                 prefs.backendBaseUrl = url.trimEnd('/')
@@ -255,42 +265,68 @@ private fun MainHome(prefs: KodiPrefs) {
     ) {
         Text("Kodi", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Wake word: built-in Porcupine keyword (JARVIS) until you add a custom “Hey Kodi” model. " +
-                "Set PICOVOICE_ACCESS_KEY in local.properties.",
-            style = MaterialTheme.typography.bodySmall,
+            "Tap the button below and speak your command.",
+            style = MaterialTheme.typography.bodyMedium,
         )
+        Spacer(Modifier.height(8.dp))
         Button(
+            onClick = {
+                val i = Intent(context, KodiVoiceService::class.java)
+                ContextCompat.startForegroundService(context, i)
+                context.startService(
+                    Intent(context, KodiVoiceService::class.java).setAction(KodiVoiceService.ACTION_MANUAL_COMMAND),
+                )
+                running = true
+            },
+            Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+        ) {
+            Text("🎤  Speak command", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(16.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Wake word (coming soon)",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        Text(
+            "Hands-free \"Jarvis\" detection requires a Picovoice key. Once approved, set " +
+                "PICOVOICE_ACCESS_KEY in local.properties and rebuild.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+        )
+        OutlinedButton(
             onClick = {
                 val i = Intent(context, KodiVoiceService::class.java)
                 ContextCompat.startForegroundService(context, i)
                 running = true
             },
             Modifier.fillMaxWidth(),
+            enabled = !running,
         ) {
-            Text("Start listening (foreground service)")
+            Text(if (running) "Wake word listener active" else "Start wake word listener")
         }
-        Button(
-            onClick = {
-                context.startService(
-                    Intent(context, KodiVoiceService::class.java).setAction(KodiVoiceService.ACTION_MANUAL_COMMAND),
-                )
-            },
-            Modifier.fillMaxWidth(),
-        ) {
-            Text("Speak command now (manual)")
+        if (running) {
+            OutlinedButton(
+                onClick = {
+                    context.stopService(Intent(context, KodiVoiceService::class.java))
+                    running = false
+                },
+                Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text("Stop listener")
+            }
         }
-        Button(
-            onClick = {
-                context.stopService(Intent(context, KodiVoiceService::class.java))
-                running = false
-            },
-            Modifier.fillMaxWidth(),
-        ) {
-            Text("Stop service")
-        }
+        Spacer(Modifier.height(8.dp))
         Text(
             "Backend: ${prefs.backendBaseUrl.ifBlank { "—" }}",
             style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

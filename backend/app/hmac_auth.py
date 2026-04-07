@@ -30,7 +30,7 @@ async def verify_request_hmac(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Timestamp skew too large")
 
     settings = get_settings()
-    secret = get_secret(settings.devices_store_path, x_kodi_device_id)
+    secret = get_secret(settings.devices_store_path, x_kodi_device_id, settings.kodi_master_secret)
     if not secret:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown device")
 

@@ -22,6 +22,10 @@ data class ToolResultDto(
     @SerializedName("isError") val isError: Boolean = false,
 )
 
+data class TranscriptBody(
+    @SerializedName("text") val text: String,
+)
+
 data class CommandDto(
     @SerializedName("status") val status: String,
     @SerializedName("assistantText") val assistantText: String? = null,
