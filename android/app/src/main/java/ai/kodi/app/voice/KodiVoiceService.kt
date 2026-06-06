@@ -19,7 +19,9 @@ import ai.kodi.app.MainActivity
 import ai.kodi.app.R
 import ai.kodi.app.KodiApplication
 import ai.kodi.app.accessibility.DeviceToolExecutor
+import ai.kodi.app.data.ClientContext
 import ai.kodi.app.data.CommandDto
+import ai.kodi.app.data.KodiPrefs
 import ai.kodi.app.data.TranscriptRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,7 +39,7 @@ import java.net.UnknownHostException
 import kotlin.math.sqrt
 
 /** Coarse pipeline state, observed by the UI to give the user feedback. */
-enum class VoiceState { IDLE, LISTENING, THINKING }
+enum class VoiceState { IDLE, LISTENING, THINKING, SPEAKING }
 
 class KodiVoiceService : Service() {
 
@@ -53,6 +55,10 @@ class KodiVoiceService : Service() {
 
     private var porcupine: Porcupine? = null
     private lateinit var tts: TtsManager
+
+    /** Active Gemini Live session, if any. Null on the legacy SSE path. */
+    @Volatile private var liveSession: LiveSession? = null
+    @Volatile private var liveActive = false
 
     override fun onCreate() {
         super.onCreate()
@@ -81,18 +87,15 @@ class KodiVoiceService : Service() {
             ACTION_MANUAL_COMMAND -> {
                 startForegroundIfNeeded()
                 scope.launch {
-                    awaitMicFreeFromWakeLoop()
-                    try {
-                        tts.stop()
-                        voiceState.value = VoiceState.LISTENING
-                        val pcm = recordCommandPcm()
-                        voiceState.value = VoiceState.THINKING
-                        runPipeline(pcm)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "manual command", e)
-                    } finally {
+                    // Tapping again while a live session is open ends it.
+                    if (liveSession != null) {
+                        stopLive()
                         voiceState.value = VoiceState.IDLE
+                        return@launch
                     }
+                    awaitMicFreeFromWakeLoop()
+                    tts.stop()
+                    startLiveOrFallback()
                 }
                 return START_STICKY
             }
@@ -201,6 +204,15 @@ class KodiVoiceService : Service() {
             var rec: AudioRecord? = null
             try {
                 while (running && !Thread.currentThread().isInterrupted) {
+                    if (liveActive) {
+                        // A duplex live session owns the mic — pause the wake loop.
+                        synchronized(micGate) {
+                            safeStopRelease(rec)
+                            rec = null
+                        }
+                        Thread.sleep(200)
+                        continue
+                    }
                     synchronized(micGate) {
                         if (requestMicRelease) {
                             safeStopRelease(rec)
@@ -248,17 +260,8 @@ class KodiVoiceService : Service() {
                         }
                         activePipelineJob?.cancel()
                         activePipelineJob = scope.launch {
-                            try {
-                                tts.stop()
-                                voiceState.value = VoiceState.LISTENING
-                                val pcm = recordCommandPcm()
-                                voiceState.value = VoiceState.THINKING
-                                runPipeline(pcm)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "pipeline", e)
-                            } finally {
-                                voiceState.value = VoiceState.IDLE
-                            }
+                            tts.stop()
+                            startLiveOrFallback()
                         }
                     }
                 }
@@ -383,6 +386,67 @@ class KodiVoiceService : Service() {
         }
     }
 
+    /** Start a Gemini Live duplex session, or fall back to the legacy SSE one-shot. */
+    private fun startLiveOrFallback() {
+        val app = application as KodiApplication
+        val repo = app.repository
+        val prefs = KodiPrefs(this)
+        if (!prefs.liveModeEnabled || !repo.liveConfigured()) {
+            activePipelineJob = scope.launch { legacyOneShot() }
+            return
+        }
+        liveActive = true
+        voiceState.value = VoiceState.LISTENING
+        var connected = false
+        val session = LiveSession(
+            context = this,
+            client = repo.liveWsClient(),
+            baseUrl = repo.liveBaseUrl,
+            deviceId = repo.liveDeviceId,
+            secret = repo.liveSecret,
+            clientContextHeader = ClientContext.snapshotHeader(this),
+            transcripts = app.transcripts,
+            scope = scope,
+            onState = { st ->
+                connected = true
+                voiceState.value = st
+            },
+            onClosed = { failed ->
+                val neverConnected = !connected
+                liveActive = false
+                liveSession = null
+                voiceState.value = VoiceState.IDLE
+                if (failed && neverConnected) {
+                    Log.w(TAG, "live failed to connect — falling back to SSE")
+                    activePipelineJob = scope.launch { legacyOneShot() }
+                }
+            },
+        )
+        liveSession = session
+        session.start()
+    }
+
+    private fun stopLive() {
+        liveActive = false
+        liveSession?.stop()
+        liveSession = null
+    }
+
+    /** Legacy single-turn path: record → WAV → SSE agent → on-device TTS. */
+    private suspend fun legacyOneShot() {
+        try {
+            tts.stop()
+            voiceState.value = VoiceState.LISTENING
+            val pcm = recordCommandPcm()
+            voiceState.value = VoiceState.THINKING
+            runPipeline(pcm)
+        } catch (e: Exception) {
+            Log.e(TAG, "legacy one-shot", e)
+        } finally {
+            voiceState.value = VoiceState.IDLE
+        }
+    }
+
     private fun rms(buf: ShortArray, len: Int): Double {
         var s = 0.0
         for (i in 0 until len) {
@@ -394,6 +458,7 @@ class KodiVoiceService : Service() {
 
     override fun onDestroy() {
         running = false
+        stopLive()
         listenThread?.interrupt()
         listenThread = null
         porcupine?.delete()

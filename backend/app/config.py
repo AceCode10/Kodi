@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     brave_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
 
+    # Gemini Live — interactive voice brain (fused STT + reasoning + TTS over WebSocket)
+    gemini_api_key: str = ""
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    gemini_voice: str = "Puck"
+
     qdrant_host: str = "127.0.0.1"
     qdrant_port: int = 6333
     qdrant_collection: str = "kodi_memories"

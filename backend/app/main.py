@@ -52,6 +52,10 @@ if _settings.sentry_dsn:
 
 app = FastAPI(title="Kodi Backend", version="1.0.0")
 
+from .live_ws import router as live_router  # noqa: E402
+
+app.include_router(live_router)
+
 _register_by_ip: dict[str, deque[float]] = {}
 _forget_all_pending_until: dict[str, float] = {}
 CONFIRM_FORGET_ALL = re.compile(

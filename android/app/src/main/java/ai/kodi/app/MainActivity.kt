@@ -467,13 +467,14 @@ private fun MainHome(prefs: KodiPrefs, onSettings: () -> Unit) {
                     )
                 },
                 Modifier.fillMaxWidth().height(64.dp),
-                enabled = voiceState == VoiceState.IDLE,
+                enabled = voiceState != VoiceState.THINKING,
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
             ) {
                 Text(
                     when (voiceState) {
-                        VoiceState.LISTENING -> "Listening…"
+                        VoiceState.LISTENING -> "Listening…  (tap to stop)"
                         VoiceState.THINKING -> "Thinking…"
+                        VoiceState.SPEAKING -> "Speaking…  (tap to stop)"
                         VoiceState.IDLE -> "🎤  Speak command"
                     },
                     style = MaterialTheme.typography.titleMedium,
@@ -547,6 +548,7 @@ private fun StatusPill(wakeOn: Boolean, hasKey: Boolean, voiceState: VoiceState)
     val text = when {
         voiceState == VoiceState.LISTENING -> "Listening…"
         voiceState == VoiceState.THINKING -> "Thinking…"
+        voiceState == VoiceState.SPEAKING -> "Speaking…"
         !hasKey -> "Wake-word disabled — Picovoice key missing"
         wakeOn -> "Listening for \"Jarvis\""
         else -> "Wake-word listener off"

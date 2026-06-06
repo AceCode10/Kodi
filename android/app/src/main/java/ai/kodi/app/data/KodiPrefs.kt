@@ -43,6 +43,11 @@ class KodiPrefs(context: Context) {
         get() = sp.getBoolean("wake_word_enabled", true)
         set(v) = sp.edit().putBoolean("wake_word_enabled", v).apply()
 
+    /** Use the Gemini Live duplex voice path; falls back to the SSE pipeline on failure. */
+    var liveModeEnabled: Boolean
+        get() = sp.getBoolean("live_mode_enabled", true)
+        set(v) = sp.edit().putBoolean("live_mode_enabled", v).apply()
+
     var dynamicColor: Boolean
         get() = sp.getBoolean("dynamic_color", true)
         set(v) = sp.edit().putBoolean("dynamic_color", v).apply()

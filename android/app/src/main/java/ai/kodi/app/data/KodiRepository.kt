@@ -111,6 +111,23 @@ class KodiRepository(
     private fun sseClient(): OkHttpClient =
         baseClientBuilder(withHmac = true).readTimeout(0, TimeUnit.SECONDS).build()
 
+    // ---- Gemini Live (WebSocket) ----
+
+    /** WebSocket client: pinned, no HMAC interceptor (the upgrade GET is signed by hand),
+     *  no read timeout, with pings to survive the ngrok/Caddy idle window. */
+    fun liveWsClient(): OkHttpClient =
+        baseClientBuilder(withHmac = false)
+            .readTimeout(0, TimeUnit.SECONDS)
+            .pingInterval(20, TimeUnit.SECONDS)
+            .build()
+
+    val liveBaseUrl: String get() = prefs.backendBaseUrl
+    val liveDeviceId: String get() = prefs.deviceId
+    val liveSecret: String get() = prefs.apiSecret
+
+    fun liveConfigured(): Boolean =
+        prefs.backendBaseUrl.isNotBlank() && prefs.deviceId.isNotBlank() && prefs.apiSecret.isNotBlank()
+
     private fun urlFor(path: String): String = prefs.backendBaseUrl.trimEnd('/') + path
 
     private fun audioRequest(sessionId: String, wav: ByteArray, ctx: String?): Request =
