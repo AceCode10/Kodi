@@ -4,6 +4,10 @@ _Last updated: April 2026_
 
 ## Status: All planned phases complete ✅
 
+> **Scope:** this build extends the original PDF spec. The authoritative as-built scope
+> (28 tools, briefing, Home Assistant, learning, expanded UI) is recorded in
+> `SPEC_AMENDMENT_v1.0.md`.
+
 ---
 
 ## Phase 1 — Critical Fixes ✅
@@ -77,6 +81,23 @@ _Last updated: April 2026_
 | E-3 | Fix `health()` Retrofit type `Map<String,Any>` — prevents Gson crash on `uptime_seconds` int | `KodiApi.kt`, `KodiRepository.kt` |
 | E-4 | Manual "Speak command" UI — primary button, wake word demoted to coming-soon section | `MainActivity.kt` |
 | E-5 | docker-compose.yml includes backend service alongside Qdrant | `infra/docker-compose.yml` |
+
+---
+
+## Second-Pass Production Audit Fixes ✅
+_Last updated: May 2026_
+
+| ID | Task | File(s) |
+|----|------|---------|
+| A2-1 | `SmsManager.getDefault()` deprecated on API 31+ — use `context.getSystemService(SmsManager)` and multipart send for long messages | `DeviceToolExecutor.kt` |
+| A2-2 | `findByText` exact-match bug — was concatenating `text + contentDescription` so `partial=false` never matched (e.g. WhatsApp/Telegram Send button) | `KodiAccessibilityService.kt` |
+| A2-3 | `describe_screen` now refuses to read sensitive-app screens (bank/wallet/password) | `DeviceToolExecutor.kt` |
+| A2-4 | `read_notifications` filters out sensitive-package notifications and over-fetches to preserve requested count | `DeviceToolExecutor.kt` |
+| A2-5 | STT fallback no longer fires on 401/403 — surfaces re-pair guidance instead of wasting on-device STT | `KodiRepository.kt` |
+| A2-6 | Wake loop guards `AudioRecord.STATE_INITIALIZED` and `startRecording` failures with back-off; prevents CPU spin if mic permission is revoked at runtime | `KodiVoiceService.kt` |
+| A2-7 | Onboarding step 1 skips re-prompt when all required permissions are already granted | `MainActivity.kt` |
+| A2-8 | Server session eviction also runs on `get()` every 5 min — long-idle servers without new registrations still reclaim memory | `session_manager.py` |
+| A2-9 | Removed unused imports (`AlarmManager`, `PendingIntent`, `Bundle`) | `DeviceToolExecutor.kt` |
 
 ---
 

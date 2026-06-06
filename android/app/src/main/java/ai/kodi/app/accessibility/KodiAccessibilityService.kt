@@ -92,9 +92,15 @@ class KodiAccessibilityService : AccessibilityService() {
         val needle = text.lowercase()
         while (queue.isNotEmpty()) {
             val n = queue.removeFirst()
-            val t = (n.text?.toString() ?: "") + (n.contentDescription?.toString() ?: "")
-            val tl = t.lowercase()
-            if (if (partial) tl.contains(needle) else tl == needle) {
+            val textLower = n.text?.toString()?.lowercase().orEmpty()
+            val descLower = n.contentDescription?.toString()?.lowercase().orEmpty()
+            val match = if (partial) {
+                (textLower.isNotEmpty() && textLower.contains(needle)) ||
+                    (descLower.isNotEmpty() && descLower.contains(needle))
+            } else {
+                textLower == needle || descLower == needle
+            }
+            if (match) {
                 if (n.isClickable) return n
                 val p = n.parent
                 if (p != null && p.isClickable) return p

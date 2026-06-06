@@ -39,7 +39,31 @@ class KodiPrefs(context: Context) {
         get() = sp.getString("session_id", "") ?: ""
         set(v) = sp.edit().putString("session_id", v).apply()
 
+    var wakeWordEnabled: Boolean
+        get() = sp.getBoolean("wake_word_enabled", true)
+        set(v) = sp.edit().putBoolean("wake_word_enabled", v).apply()
+
+    var dynamicColor: Boolean
+        get() = sp.getBoolean("dynamic_color", true)
+        set(v) = sp.edit().putBoolean("dynamic_color", v).apply()
+
+    var briefingEnabled: Boolean
+        get() = sp.getBoolean("briefing_enabled", false)
+        set(v) = sp.edit().putBoolean("briefing_enabled", v).apply()
+
+    var briefingHour: Int
+        get() = sp.getInt("briefing_hour", 8)
+        set(v) = sp.edit().putInt("briefing_hour", v.coerceIn(0, 23)).apply()
+
+    var briefingMinute: Int
+        get() = sp.getInt("briefing_minute", 0)
+        set(v) = sp.edit().putInt("briefing_minute", v.coerceIn(0, 59)).apply()
+
     fun clearSession() {
         sp.edit().remove("session_id").apply()
+    }
+
+    fun clearAll() {
+        sp.edit().clear().apply()
     }
 }

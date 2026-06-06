@@ -8,4 +8,5 @@ openai>=1.57.0
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
 mem0ai>=1.0.0
-qdrant-client>=1.12.0
+chromadb>=0.5.0
+sentry-sdk[fastapi]>=2.18.0

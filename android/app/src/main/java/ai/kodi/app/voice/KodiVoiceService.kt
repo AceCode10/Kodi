@@ -20,11 +20,13 @@ import ai.kodi.app.R
 import ai.kodi.app.KodiApplication
 import ai.kodi.app.accessibility.DeviceToolExecutor
 import ai.kodi.app.data.CommandDto
+import ai.kodi.app.data.TranscriptRole
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import ai.picovoice.porcupine.Porcupine
@@ -33,6 +35,9 @@ import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import kotlin.math.sqrt
+
+/** Coarse pipeline state, observed by the UI to give the user feedback. */
+enum class VoiceState { IDLE, LISTENING, THINKING }
 
 class KodiVoiceService : Service() {
 
@@ -79,10 +84,32 @@ class KodiVoiceService : Service() {
                     awaitMicFreeFromWakeLoop()
                     try {
                         tts.stop()
+                        voiceState.value = VoiceState.LISTENING
                         val pcm = recordCommandPcm()
+                        voiceState.value = VoiceState.THINKING
                         runPipeline(pcm)
                     } catch (e: Exception) {
                         Log.e(TAG, "manual command", e)
+                    } finally {
+                        voiceState.value = VoiceState.IDLE
+                    }
+                }
+                return START_STICKY
+            }
+            ACTION_RUN_SCHEDULED -> {
+                startForegroundIfNeeded()
+                val taskText = intent.getStringExtra(EXTRA_TASK_TEXT).orEmpty()
+                if (taskText.isNotBlank()) {
+                    scope.launch {
+                        try {
+                            tts.stop()
+                            voiceState.value = VoiceState.THINKING
+                            runTextPipeline(taskText)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "scheduled task", e)
+                        } finally {
+                            voiceState.value = VoiceState.IDLE
+                        }
                     }
                 }
                 return START_STICKY
@@ -181,11 +208,26 @@ class KodiVoiceService : Service() {
                             requestMicRelease = false
                         }
                         if (rec == null) {
-                            rec = buildWakeAudioRecord(frameLen)
-                            rec.startRecording()
+                            val newRec = buildWakeAudioRecord(frameLen)
+                            if (newRec.state != AudioRecord.STATE_INITIALIZED) {
+                                Log.w(TAG, "AudioRecord init failed (state=${newRec.state}) — mic permission?")
+                                safeStopRelease(newRec)
+                            } else {
+                                try {
+                                    newRec.startRecording()
+                                    rec = newRec
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "AudioRecord.startRecording failed", e)
+                                    safeStopRelease(newRec)
+                                }
+                            }
                         }
                     }
-                    val activeRec = rec ?: continue
+                    val activeRec = rec
+                    if (activeRec == null) {
+                        Thread.sleep(500)
+                        continue
+                    }
                     val read = try {
                         activeRec.read(frame, 0, frame.size)
                     } catch (e: Exception) {
@@ -208,10 +250,14 @@ class KodiVoiceService : Service() {
                         activePipelineJob = scope.launch {
                             try {
                                 tts.stop()
+                                voiceState.value = VoiceState.LISTENING
                                 val pcm = recordCommandPcm()
+                                voiceState.value = VoiceState.THINKING
                                 runPipeline(pcm)
                             } catch (e: Exception) {
                                 Log.e(TAG, "pipeline", e)
+                            } finally {
+                                voiceState.value = VoiceState.IDLE
                             }
                         }
                     }
@@ -275,15 +321,52 @@ class KodiVoiceService : Service() {
         return@withContext out.toByteArray()
     }
 
+    private suspend fun runTextPipeline(text: String) {
+        val app = application as KodiApplication
+        val repo = app.repository
+        var errored = false
+        var streamed = false
+        tts.beginStream()
+        val reply = withContext(Dispatchers.IO) {
+            try {
+                repo.runText(
+                    text = text,
+                    onDelta = { sentence -> streamed = true; tts.pushChunk(sentence) },
+                ) { cmd: CommandDto -> DeviceToolExecutor.execute(this@KodiVoiceService, cmd) }
+            } catch (e: SocketTimeoutException) {
+                errored = true
+                "That scheduled task timed out."
+            } catch (e: UnknownHostException) {
+                errored = true
+                "I couldn't reach the backend to run your scheduled task."
+            } catch (e: Exception) {
+                Log.e(TAG, "scheduled pipeline", e)
+                errored = true
+                "Scheduled task failed: ${e.message ?: "unknown error"}"
+            }
+        }
+        if (errored) app.transcripts.add(TranscriptRole.ASSISTANT, reply)
+        // If nothing streamed (error path), speak the fallback message; otherwise deltas covered it.
+        if (!streamed && reply.isNotBlank()) {
+            withContext(Dispatchers.Main) { tts.speak(reply) }
+        } else {
+            tts.endStream()
+        }
+    }
+
     private suspend fun runPipeline(pcm: ByteArray) {
         if (pcm.isEmpty()) return
         val wav = WavUtil.pcm16MonoToWav(pcm, SAMPLE_RATE)
         val repo = (application as KodiApplication).repository
+        var streamed = false
+        tts.beginStream()
         val reply = withContext(Dispatchers.IO) {
             try {
-                repo.runVoiceCommandWithSttFallback(wav, applicationContext) { cmd: CommandDto ->
-                    DeviceToolExecutor.execute(this@KodiVoiceService, cmd)
-                }
+                repo.runVoiceCommandWithSttFallback(
+                    wavBytes = wav,
+                    appContext = applicationContext,
+                    onDelta = { sentence -> streamed = true; tts.pushChunk(sentence) },
+                ) { cmd: CommandDto -> DeviceToolExecutor.execute(this@KodiVoiceService, cmd) }
             } catch (e: SocketTimeoutException) {
                 "That took too long. Please try again."
             } catch (e: UnknownHostException) {
@@ -293,8 +376,10 @@ class KodiVoiceService : Service() {
                 "I'm having trouble connecting. Try again in a moment."
             }
         }
-        withContext(Dispatchers.Main) {
-            tts.speak(reply)
+        if (!streamed && reply.isNotBlank()) {
+            withContext(Dispatchers.Main) { tts.speak(reply) }
+        } else {
+            tts.endStream()
         }
     }
 
@@ -321,14 +406,19 @@ class KodiVoiceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        /** Observable pipeline state for the UI; updated by this service. */
+        val voiceState = MutableStateFlow(VoiceState.IDLE)
+
         private const val TAG = "KodiVoice"
         private const val NOTIF_ID = 42
         private const val SAMPLE_RATE = 16000
         private const val MAX_SECONDS = 30
-        private const val SILENCE_MS = 900L
+        private const val SILENCE_MS = 600L
         private const val MIN_SPEECH_MS = 400L
-        private const val SILENCE_RMS = 120.0
+        private const val SILENCE_RMS = 100.0
         const val ACTION_STOP = "ai.kodi.app.STOP_VOICE"
         const val ACTION_MANUAL_COMMAND = "ai.kodi.app.MANUAL_COMMAND"
+        const val ACTION_RUN_SCHEDULED = "ai.kodi.app.RUN_SCHEDULED"
+        const val EXTRA_TASK_TEXT = "task_text"
     }
 }

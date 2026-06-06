@@ -1,6 +1,8 @@
 import concurrent.futures
 import logging
+import re
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import anthropic
@@ -70,6 +72,17 @@ def _execute_server_tool_impl(
     if name == "recall":
         q = tool_input.get("query") or ""
         return memory_search(user_id, q, limit=5) or "No matching memories."
+    if name == "call_home_assistant":
+        from .home_assistant import call_home_assistant
+
+        op = tool_input.get("operation") or ""
+        kwargs = {k: v for k, v in tool_input.items() if k != "operation"}
+        return call_home_assistant(op, **kwargs)
+    if name == "record_lesson":
+        from .learning import add_lesson
+
+        add_lesson(user_id, tool_input.get("lesson") or "")
+        return "Lesson recorded."
     return "Unknown tool."
 
 
@@ -100,6 +113,19 @@ def _execute_server_tool(
         return f"Tool error: {exc!s}."
 
 
+def _is_error_result(text: str) -> bool:
+    low = (text or "").lower()
+    return low.startswith(("tool error", "tool timed out", "unknown tool", "could not", "memory unavailable"))
+
+
+def _finish(state: Any, text: str) -> dict[str, Any]:
+    """Record the final assistant reply in history so the next command keeps context."""
+    clean = text.strip() or "Done."
+    with state.lock:
+        state.claude_messages.append({"role": "assistant", "content": clean})
+    return {"status": "done", "assistant_text": clean}
+
+
 def run_agent_step(state: Any) -> dict[str, Any]:
     settings = get_settings()
     if not settings.anthropic_api_key:
@@ -110,10 +136,7 @@ def run_agent_step(state: Any) -> dict[str, Any]:
     max_inner = 16
     for _ in range(max_inner):
         if state.tools_used_this_command >= settings.max_tools_per_command:
-            return {
-                "status": "done",
-                "assistant_text": "I hit the tool limit for this command; try a shorter request.",
-            }
+            return _finish(state, "I hit the tool limit for this command; try a shorter request.")
 
         try:
             response = client.messages.create(
@@ -137,7 +160,7 @@ def run_agent_step(state: Any) -> dict[str, Any]:
                 text_parts.append(block.text if hasattr(block, "text") else block.get("text", ""))
 
         if not tool_blocks:
-            return {"status": "done", "assistant_text": "".join(text_parts).strip() or "Done."}
+            return _finish(state, "".join(text_parts))
 
         if len(tool_blocks) > 1:
             logger.warning("Multiple tool_use blocks; processing the first only")
@@ -182,6 +205,8 @@ def run_agent_step(state: Any) -> dict[str, Any]:
             )
             truncated_out = out[:6000] if len(out) > 6000 else out
             with state.lock:
+                if _is_error_result(truncated_out):
+                    state.had_error = True
                 state.claude_messages.append(
                     {
                         "role": "user",
@@ -208,16 +233,201 @@ def run_agent_step(state: Any) -> dict[str, Any]:
     return {"status": "error", "message": "Too many agent steps."}
 
 
-def start_command(state: Any, transcript: str, memory_block: str) -> None:
+_SENTENCE_RE = re.compile(r"(.+?[.!?]+)(\s+)", re.S)
+
+
+def _drain_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split off every complete sentence; return (sentences, remaining_partial)."""
+    sentences: list[str] = []
+    rest = buffer
+    while True:
+        m = _SENTENCE_RE.match(rest)
+        if not m:
+            break
+        sentences.append(m.group(1).strip())
+        rest = rest[m.end():]
+    return sentences, rest
+
+
+def _append_filtered_assistant(state: Any, content: Any) -> None:
+    """Append the assistant message keeping at most the first tool_use block (mirrors run_agent_step)."""
+    filtered: list[dict[str, Any]] = []
+    tool_seen = False
+    for b in content:
+        btype = b.type if hasattr(b, "type") else b.get("type")
+        if btype == "text":
+            filtered.append(_block_to_dict(b))
+        elif btype == "tool_use":
+            if tool_seen:
+                continue
+            tool_seen = True
+            filtered.append(_block_to_dict(b))
+    with state.lock:
+        state.claude_messages.append({"role": "assistant", "content": filtered})
+
+
+def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
+    """Generator variant of run_agent_step. Yields SSE-shaped event dicts:
+
+    {"type":"delta","text":...} | {"type":"device_action",...} |
+    {"type":"done","assistant_text":...} | {"type":"error","message":...}
+    """
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        yield {"type": "error", "message": "LLM not configured (ANTHROPIC_API_KEY)."}
+        return
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_timeout_seconds)
+    max_inner = 16
+
+    for _ in range(max_inner):
+        if state.tools_used_this_command >= settings.max_tools_per_command:
+            res = _finish(state, "I hit the tool limit for this command; try a shorter request.")
+            yield {"type": "delta", "text": res["assistant_text"]}
+            yield {"type": "done", "assistant_text": res["assistant_text"]}
+            return
+
+        buffer = ""
+        full_text = ""
+        try:
+            with client.messages.stream(
+                model=settings.anthropic_model,
+                max_tokens=1024,
+                temperature=0.3,
+                system=KODI_SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=state.claude_messages,
+            ) as stream:
+                for chunk in stream.text_stream:
+                    buffer += chunk
+                    full_text += chunk
+                    sentences, buffer = _drain_sentences(buffer)
+                    for s in sentences:
+                        if s:
+                            yield {"type": "delta", "text": s}
+                final = stream.get_final_message()
+        except Exception as exc:
+            logger.exception("claude messages.stream failed")
+            yield {"type": "error", "message": f"LLM failed: {exc!s}."}
+            return
+
+        content = final.content
+        tool_blocks = [b for b in content if (b.type if hasattr(b, "type") else b.get("type")) == "tool_use"]
+
+        if not tool_blocks:
+            tail = buffer.strip()
+            if tail:
+                yield {"type": "delta", "text": tail}
+            res = _finish(state, full_text)
+            yield {"type": "done", "assistant_text": res["assistant_text"]}
+            return
+
+        # A tool turn — any lead-in text was already streamed above.
+        _append_filtered_assistant(state, content)
+        block = tool_blocks[0]
+        name = _tool_name(block)
+        tid = _tool_id(block)
+        inp = _tool_input(block)
+
+        if name in DEVICE_TOOL_NAMES:
+            state.tools_used_this_command += 1
+            state.pending_device_since = time.time()
+            state.pending_device_tool = {"tool_use_id": tid, "name": name, "input": inp}
+            yield {
+                "type": "device_action",
+                "tool_use_id": tid,
+                "tool_name": name,
+                "tool_input": inp,
+            }
+            return
+
+        if name in SERVER_TOOL_NAMES:
+            state.tools_used_this_command += 1
+            out = _execute_server_tool(name, inp, transcript=state.last_transcript, user_id=state.device_id)
+            truncated_out = out[:6000] if len(out) > 6000 else out
+            with state.lock:
+                if _is_error_result(truncated_out):
+                    state.had_error = True
+                state.claude_messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": tid, "content": truncated_out}],
+                    }
+                )
+            continue
+
+        with state.lock:
+            state.had_error = True
+            state.claude_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tid,
+                            "content": f"Unknown tool {name}.",
+                            "is_error": True,
+                        }
+                    ],
+                }
+            )
+
+    yield {"type": "error", "message": "Too many agent steps."}
+
+
+def _compact_history(messages: list[dict[str, Any]], max_messages: int) -> list[dict[str, Any]]:
+    """Keep only plain text user/assistant turns — drop tool_use / tool_result blocks.
+
+    Prior user turns have their injected context blocks stripped back to the spoken text
+    so stale time/location/memory does not pollute the rolling window.
+    """
+    clean: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue  # tool_use (assistant list) or tool_result (user list)
+        if role == "user":
+            marker = "User said: "
+            idx = content.rfind(marker)
+            spoken = content[idx + len(marker):] if idx >= 0 else content
+            clean.append({"role": "user", "content": spoken.strip()})
+        elif role == "assistant":
+            clean.append({"role": "assistant", "content": content.strip()})
+    return clean[-max_messages:] if max_messages > 0 else []
+
+
+def start_command(
+    state: Any,
+    transcript: str,
+    memory_block: str,
+    client_context: str = "",
+    user_profile: str = "",
+    lessons_block: str = "",
+) -> None:
+    settings = get_settings()
     with state.lock:
         state.last_transcript = transcript
         state.tools_used_this_command = 0
+        state.had_error = False
         state.pending_device_tool = None
         state.pending_device_since = None
-        user_body = transcript
+
+        history = _compact_history(state.claude_messages, settings.max_history_messages)
+
+        sections: list[str] = []
+        if user_profile:
+            sections.append(f"[User profile]\n{user_profile}")
+        if lessons_block:
+            sections.append(f"[Lessons learned]\n{lessons_block}")
+        if client_context:
+            sections.append(f"[Current client context]\n{client_context}")
         if memory_block:
-            user_body = f"[Context from memory]\n{memory_block}\n\nUser said: {transcript}"
-        state.claude_messages = [{"role": "user", "content": user_body}]
+            sections.append(f"[Context from memory]\n{memory_block}")
+        sections.append(f"User said: {transcript}")
+        user_body = "\n\n".join(sections) if len(sections) > 1 else transcript
+
+        state.claude_messages = history + [{"role": "user", "content": user_body}]
 
 
 def apply_tool_result(state: Any, tool_use_id: str, result_text: str, is_error: bool = False) -> None:
@@ -225,6 +435,8 @@ def apply_tool_result(state: Any, tool_use_id: str, result_text: str, is_error: 
     with state.lock:
         state.pending_device_tool = None
         state.pending_device_since = None
+        if is_error:
+            state.had_error = True
         state.claude_messages.append(
             {
                 "role": "user",

@@ -1,4 +1,10 @@
-"""Anthropic tool definitions — names frozen per Kodi Product Specification §5.3."""
+"""Anthropic tool definitions — Kodi v1.0 as-built tool set.
+
+The original spec (Kodi_Product_Specification_v1.0.pdf §5.3) defined 10 tools and
+required a specification amendment for any additions. The shipped v1.0 build extends
+this to the full set below; see SPEC_AMENDMENT_v1.0.md for the authoritative as-built
+scope record.
+"""
 
 TOOLS = [
     {
@@ -119,7 +125,10 @@ TOOLS = [
     },
     {
         "name": "send_email",
-        "description": "Compose and send an email via the default email app (Gmail).",
+        "description": (
+            "Open the email composer in the default mail app with the recipient, subject, "
+            "and body pre-filled. The user taps send to deliver it — tell them it is ready to send."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -132,7 +141,10 @@ TOOLS = [
     },
     {
         "name": "create_calendar_event",
-        "description": "Create a calendar event.",
+        "description": (
+            "Open the calendar event editor pre-filled with the title, date, and time. "
+            "The user confirms in the calendar app to save it."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -171,7 +183,10 @@ TOOLS = [
     },
     {
         "name": "play_media",
-        "description": "Play music or video by searching in a media app (Spotify, YouTube, etc.).",
+        "description": (
+            "Open a media app (Spotify or YouTube) with a search for the query so the user "
+            "can pick what to play. Use media_control afterwards to start playback if needed."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -236,6 +251,27 @@ TOOLS = [
         },
     },
     {
+        "name": "call_home_assistant",
+        "description": (
+            "Control or query the user's Home Assistant instance. "
+            "Use operation='call_service' to actuate (lights, switches, scripts, scenes, climate) — "
+            "supply domain (e.g. light, switch, scene), service (e.g. turn_on, turn_off, toggle), and "
+            "service_data (e.g. {\"entity_id\": \"light.kitchen\", \"brightness_pct\": 60}). "
+            "Use operation='get_state' with entity_id to read current state."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operation": {"type": "string", "enum": ["call_service", "get_state"]},
+                "domain": {"type": "string"},
+                "service": {"type": "string"},
+                "service_data": {"type": "object"},
+                "entity_id": {"type": "string"},
+            },
+            "required": ["operation"],
+        },
+    },
+    {
         "name": "read_last_message",
         "description": "Read the most recent WhatsApp or SMS message from a contact.",
         "input_schema": {
@@ -245,6 +281,77 @@ TOOLS = [
                 "app": {"type": "string", "description": "whatsapp or sms"},
             },
             "required": ["contact", "app"],
+        },
+    },
+    {
+        "name": "tap_on_screen",
+        "description": (
+            "Tap a UI element by visible text or content-description in the currently foreground app. "
+            "Use after open_app + describe_screen to drive arbitrary apps."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Visible label or content-description to tap"},
+                "partial": {"type": "boolean", "default": True, "description": "Match substring (true) or exact (false)"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "type_into_field",
+        "description": (
+            "Type text into whichever editable field is currently focused or the first editable field on screen. "
+            "Tap that field first with tap_on_screen if needed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "schedule_task",
+        "description": (
+            "Schedule a task to run at a specific local time. When the time arrives Kodi runs the task "
+            "text through the normal agent loop as if the user had just spoken it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "when_iso": {"type": "string", "description": "ISO 8601 local datetime, e.g. 2026-05-21T20:00:00"},
+                "task": {"type": "string", "description": "What Kodi should do, phrased as a user command"},
+                "id": {"type": "string", "description": "Optional stable id; auto-generated if omitted"},
+            },
+            "required": ["when_iso", "task"],
+        },
+    },
+    {
+        "name": "list_scheduled_tasks",
+        "description": "List all currently pending scheduled tasks on this device.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "record_lesson",
+        "description": (
+            "Store a concise behavioural lesson after you made a mistake or the user corrected you, "
+            "so you do not repeat it. Phrase it as a short imperative rule."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"lesson": {"type": "string"}},
+            "required": ["lesson"],
+        },
+    },
+    {
+        "name": "cancel_scheduled_task",
+        "description": "Cancel a pending scheduled task by id (obtain via list_scheduled_tasks).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
         },
     },
 ]
@@ -269,7 +376,14 @@ DEVICE_TOOL_NAMES = frozenset(
         "navigate_to",
         "describe_screen",
         "read_notifications",
+        "tap_on_screen",
+        "type_into_field",
+        "schedule_task",
+        "list_scheduled_tasks",
+        "cancel_scheduled_task",
     }
 )
 
-SERVER_TOOL_NAMES = frozenset({"search_web", "remember", "recall"})
+SERVER_TOOL_NAMES = frozenset(
+    {"search_web", "remember", "recall", "call_home_assistant", "record_lesson"}
+)

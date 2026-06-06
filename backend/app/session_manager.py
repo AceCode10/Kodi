@@ -14,6 +14,7 @@ class SessionState:
     claude_messages: list[dict[str, Any]] = field(default_factory=list)
     tools_used_this_command: int = 0
     last_transcript: str = ""
+    had_error: bool = False
     pending_device_tool: dict[str, Any] | None = None
     pending_device_since: float | None = None
     created_at: float = field(default_factory=time.time)
@@ -21,10 +22,14 @@ class SessionState:
     lock: RLock = field(default_factory=RLock)
 
 
+EVICTION_INTERVAL_SECONDS = 300  # at most once every 5 minutes from get()
+
+
 class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionState] = {}
         self._lock = Lock()
+        self._last_eviction: float = 0.0
 
     def create(self, device_id: str) -> str:
         sid = uuid.uuid4().hex
@@ -35,16 +40,21 @@ class SessionManager:
 
     def _evict_stale(self) -> None:
         """Remove sessions idle longer than SESSION_TTL_SECONDS. Call under _lock."""
-        cutoff = time.time() - SESSION_TTL_SECONDS
+        now = time.time()
+        cutoff = now - SESSION_TTL_SECONDS
         stale = [k for k, v in self._sessions.items() if v.last_used < cutoff]
         for k in stale:
             del self._sessions[k]
+        self._last_eviction = now
 
     def get(self, session_id: str) -> SessionState | None:
         with self._lock:
+            now = time.time()
+            if now - self._last_eviction > EVICTION_INTERVAL_SECONDS:
+                self._evict_stale()
             s = self._sessions.get(session_id)
             if s is not None:
-                s.last_used = time.time()
+                s.last_used = now
             return s
 
     def require(self, session_id: str) -> SessionState:

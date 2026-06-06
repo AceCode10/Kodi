@@ -26,6 +26,14 @@ data class TranscriptBody(
     @SerializedName("text") val text: String,
 )
 
+data class BriefingDto(
+    @SerializedName("text") val text: String,
+)
+
+data class BriefingRequestBody(
+    @SerializedName("context") val context: String,
+)
+
 data class CommandDto(
     @SerializedName("status") val status: String,
     @SerializedName("assistantText") val assistantText: String? = null,

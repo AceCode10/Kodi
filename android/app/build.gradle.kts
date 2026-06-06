@@ -26,6 +26,11 @@ android {
             "PICOVOICE_ACCESS_KEY",
             "\"${localProps.getProperty("PICOVOICE_ACCESS_KEY", "")}\""
         )
+        buildConfigField(
+            "String",
+            "SENTRY_DSN",
+            "\"${localProps.getProperty("SENTRY_DSN", "")}\""
+        )
     }
 
     buildTypes {
@@ -57,6 +62,7 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -67,9 +73,14 @@ dependencies {
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.squareup.retrofit2:converter-gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     implementation("ai.picovoice:porcupine-android:3.0.2")
+
+    implementation("io.sentry:sentry-android:7.18.0")
+
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     testImplementation("junit:junit:4.13.2")
 

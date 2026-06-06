@@ -5,8 +5,12 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
-import retrofit2.http.Path
 
+/**
+ * Retrofit interface for the non-streaming endpoints. The turn endpoints
+ * (/audio, /text, /tool-result) are Server-Sent Events and are driven directly
+ * via OkHttp in [KodiRepository] / [KodiSseClient].
+ */
 interface KodiApi {
     @GET("/v1/health")
     suspend fun health(): Map<String, Any>
@@ -20,21 +24,8 @@ interface KodiApi {
     @POST("/v1/sessions")
     suspend fun createSession(@Body body: RequestBody): SessionDto
 
-    @POST("/v1/sessions/{sessionId}/audio")
-    suspend fun postAudio(
-        @Path("sessionId") sessionId: String,
-        @Body audio: RequestBody,
-    ): CommandDto
-
-    @POST("/v1/sessions/{sessionId}/text")
-    suspend fun postTranscript(
-        @Path("sessionId") sessionId: String,
-        @Body body: TranscriptBody,
-    ): CommandDto
-
-    @POST("/v1/sessions/{sessionId}/tool-result")
-    suspend fun postToolResult(
-        @Path("sessionId") sessionId: String,
-        @Body body: ToolResultDto,
-    ): CommandDto
+    @POST("/v1/briefing")
+    suspend fun briefing(
+        @Body body: BriefingRequestBody,
+    ): BriefingDto
 }

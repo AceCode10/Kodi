@@ -1,6 +1,10 @@
 # Kodi — Audit & Implementation Plan
 _Generated after full codebase + spec review — April 2026_
 
+> **Scope note:** the shipped v1.0 build extends the original `Kodi_Product_Specification_v1.0.pdf`.
+> See `SPEC_AMENDMENT_v1.0.md` for the authoritative as-built scope — 28 tools, daily
+> briefing, Home Assistant, learning subsystem, and the expanded UI.
+
 ---
 
 ## Audit: What Is Complete ✅

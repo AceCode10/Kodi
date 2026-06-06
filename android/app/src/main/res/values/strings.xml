@@ -2,4 +2,9 @@
     <string name="app_name">Kodi</string>
     <string name="notif_listening">Kodi is listening — say "Jarvis" to activate</string>
     <string name="accessibility_description">Kodi uses accessibility to complete tasks you request by voice in supported apps.</string>
+    <string name="shortcut_speak_short">Speak</string>
+    <string name="shortcut_speak_long">Speak to Kodi</string>
+    <string name="shortcut_settings_short">Settings</string>
+    <string name="shortcut_settings_long">Open Kodi settings</string>
+    <string name="tile_label">Kodi</string>
 </resources>

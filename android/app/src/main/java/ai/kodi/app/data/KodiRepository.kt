@@ -7,15 +7,21 @@ import com.google.gson.Gson
 import okhttp3.CertificatePinner
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
-import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class KodiRepository(private val context: Context) {
+/** SSE stream failure carrying the originating HTTP status when known. */
+class SseException(message: String, val httpCode: Int? = null) : IOException(message)
+
+class KodiRepository(
+    private val context: Context,
+    private val transcripts: TranscriptStore? = null,
+) {
     private val prefs = KodiPrefs(context)
     private val gson = Gson()
 
@@ -92,86 +98,165 @@ class KodiRepository(private val context: Context) {
         prefs.clearSession()
     }
 
-    private suspend fun runToolLoop(
-        session: String,
-        first: CommandDto,
+    suspend fun fetchBriefing(): Result<String> = runCatching {
+        val ctx = ClientContext.snapshotHeader(context) ?: ""
+        apiAuthed().briefing(BriefingRequestBody(context = ctx)).text
+    }
+
+    // ---- SSE streaming pipeline ----
+
+    private val jsonMedia = "application/json; charset=utf-8".toMediaType()
+
+    /** OkHttp client for SSE: HMAC-signed, no read timeout (the agent turn streams). */
+    private fun sseClient(): OkHttpClient =
+        baseClientBuilder(withHmac = true).readTimeout(0, TimeUnit.SECONDS).build()
+
+    private fun urlFor(path: String): String = prefs.backendBaseUrl.trimEnd('/') + path
+
+    private fun audioRequest(sessionId: String, wav: ByteArray, ctx: String?): Request =
+        Request.Builder()
+            .url(urlFor("/v1/sessions/$sessionId/audio"))
+            .header("Accept", "text/event-stream")
+            .apply { ctx?.let { header("X-Kodi-Client-Context", it) } }
+            .post(wav.toRequestBody("audio/wav".toMediaType()))
+            .build()
+
+    private fun textRequest(sessionId: String, text: String, ctx: String?): Request =
+        Request.Builder()
+            .url(urlFor("/v1/sessions/$sessionId/text"))
+            .header("Accept", "text/event-stream")
+            .apply { ctx?.let { header("X-Kodi-Client-Context", it) } }
+            .post(gson.toJson(TranscriptBody(text = text)).toRequestBody(jsonMedia))
+            .build()
+
+    private fun toolResultRequest(sessionId: String, dto: ToolResultDto): Request =
+        Request.Builder()
+            .url(urlFor("/v1/sessions/$sessionId/tool-result"))
+            .header("Accept", "text/event-stream")
+            .post(gson.toJson(dto).toRequestBody(jsonMedia))
+            .build()
+
+    /** Drives one command to completion: stream → device tool → stream → ... → done. */
+    private suspend fun streamTurnLoop(
+        sessionId: String,
+        firstRequest: Request,
+        onTranscript: (String) -> Unit,
+        onDelta: (String) -> Unit,
         toolHandler: suspend (CommandDto) -> String,
     ): String {
-        val api = apiAuthed()
-        var cmd = first
-        while (cmd.status == "device_action") {
-            val toolId = cmd.toolUseId ?: break
-            val resultText = toolHandler(cmd)
-            cmd = api.postToolResult(
-                session,
-                ToolResultDto(toolUseId = toolId, content = resultText, isError = false),
-            )
-        }
-        return when (cmd.status) {
-            "done" -> cmd.assistantText.orEmpty()
-            else -> cmd.message ?: "I'm having trouble connecting. Try again in a moment."
+        val client = sseClient()
+        var request = firstRequest
+        while (true) {
+            when (val r = KodiSseClient.stream(client, request, onTranscript, onDelta)) {
+                is SseResult.Done -> return r.assistantText
+                is SseResult.DeviceAction -> {
+                    val cmd = CommandDto(
+                        status = "device_action",
+                        toolUseId = r.toolUseId,
+                        toolName = r.toolName,
+                        toolInput = r.toolInput,
+                    )
+                    val toolResult = toolHandler(cmd)
+                    request = toolResultRequest(
+                        sessionId,
+                        ToolResultDto(toolUseId = r.toolUseId, content = toolResult, isError = false),
+                    )
+                }
+                is SseResult.Error -> throw SseException(r.message, r.httpCode)
+            }
         }
     }
 
-    private suspend fun runFromAudioBytes(wavBytes: ByteArray, toolHandler: suspend (CommandDto) -> String): String {
-        val session = ensureSession()
-        val api = apiAuthed()
+    private suspend fun runAudioStreaming(
+        wav: ByteArray,
+        onTranscript: (String) -> Unit,
+        onDelta: (String) -> Unit,
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
+        val ctx = ClientContext.snapshotHeader(context)
+        var session = ensureSession()
         return try {
-            val first = api.postAudio(session, wavBytes.toRequestBody("audio/wav".toMediaType()))
-            runToolLoop(session, first, toolHandler)
-        } catch (e: HttpException) {
-            if (e.code() == 404) {
+            streamTurnLoop(session, audioRequest(session, wav, ctx), onTranscript, onDelta, toolHandler)
+        } catch (e: SseException) {
+            if (e.httpCode == 404) {
                 prefs.clearSession()
-                val newSession = ensureSession()
-                val first = api.postAudio(newSession, wavBytes.toRequestBody("audio/wav".toMediaType()))
-                runToolLoop(newSession, first, toolHandler)
+                session = ensureSession()
+                streamTurnLoop(session, audioRequest(session, wav, ctx), onTranscript, onDelta, toolHandler)
             } else throw e
         }
     }
 
-    private suspend fun runFromTranscript(text: String, toolHandler: suspend (CommandDto) -> String): String {
-        val session = ensureSession()
-        val api = apiAuthed()
+    private suspend fun runTextStreaming(
+        text: String,
+        onDelta: (String) -> Unit,
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
+        val ctx = ClientContext.snapshotHeader(context)
+        var session = ensureSession()
         return try {
-            val first = api.postTranscript(session, TranscriptBody(text = text))
-            runToolLoop(session, first, toolHandler)
-        } catch (e: HttpException) {
-            if (e.code() == 404) {
+            streamTurnLoop(session, textRequest(session, text, ctx), {}, onDelta, toolHandler)
+        } catch (e: SseException) {
+            if (e.httpCode == 404) {
                 prefs.clearSession()
-                val newSession = ensureSession()
-                val first = api.postTranscript(newSession, TranscriptBody(text = text))
-                runToolLoop(newSession, first, toolHandler)
+                session = ensureSession()
+                streamTurnLoop(session, textRequest(session, text, ctx), {}, onDelta, toolHandler)
             } else throw e
         }
+    }
+
+    /** Public entry point for scheduled tasks: drives the agent loop from a text command. */
+    suspend fun runText(
+        text: String,
+        onDelta: (String) -> Unit = {},
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
+        transcripts?.add(TranscriptRole.USER, text)
+        val reply = runTextStreaming(text, onDelta, toolHandler)
+        if (reply.isNotBlank()) transcripts?.add(TranscriptRole.ASSISTANT, reply)
+        return reply
     }
 
     /**
-     * Primary path: cloud STT + agent. On network/HTTP failure, one-shot on-device [SpeechRecognizer] then POST /text.
+     * Primary path: cloud STT + streaming agent. On network/HTTP failure, one-shot on-device
+     * [android.speech.SpeechRecognizer] then the streaming /text path.
      */
     suspend fun runVoiceCommandWithSttFallback(
         wavBytes: ByteArray,
         appContext: Context,
+        onTranscript: (String) -> Unit = {},
+        onDelta: (String) -> Unit = {},
         toolHandler: suspend (CommandDto) -> String,
     ): String {
+        val logTranscript: (String) -> Unit = { t ->
+            transcripts?.add(TranscriptRole.USER, t)
+            onTranscript(t)
+        }
         return try {
-            runFromAudioBytes(wavBytes, toolHandler)
-        } catch (e: HttpException) {
-            if (e.code() in 400..599) fallbackLocalStt(appContext, toolHandler)
-            else "I'm having trouble connecting. Try again in a moment."
+            val reply = runAudioStreaming(wavBytes, logTranscript, onDelta, toolHandler)
+            if (reply.isNotBlank()) transcripts?.add(TranscriptRole.ASSISTANT, reply)
+            reply
+        } catch (e: SseException) {
+            when (e.httpCode) {
+                401, 403 -> "I can't reach your backend — please re-pair this device in onboarding."
+                400, 503, in 500..599 -> fallbackLocalStt(appContext, onDelta, toolHandler)
+                else -> fallbackLocalStt(appContext, onDelta, toolHandler)
+            }
         } catch (_: IOException) {
-            fallbackLocalStt(appContext, toolHandler)
+            fallbackLocalStt(appContext, onDelta, toolHandler)
         }
     }
 
-    private suspend fun fallbackLocalStt(appContext: Context, toolHandler: suspend (CommandDto) -> String): String {
+    private suspend fun fallbackLocalStt(
+        appContext: Context,
+        onDelta: (String) -> Unit,
+        toolHandler: suspend (CommandDto) -> String,
+    ): String {
         val text = OnDeviceSpeech.transcribeOrNull(appContext)
         if (text.isNullOrBlank()) {
             return "I'm having trouble connecting. Try again in a moment."
         }
         return try {
-            runFromTranscript(text, toolHandler)
-        } catch (_: HttpException) {
-            "I'm having trouble connecting. Try again in a moment."
+            runText(text, onDelta, toolHandler)
         } catch (_: IOException) {
             "I'm having trouble connecting. Try again in a moment."
         }
