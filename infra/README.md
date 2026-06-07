@@ -1,38 +1,39 @@
 # Kodi infrastructure
 
-## Qdrant (vector store)
+Production runs as two Docker containers — see **[DEPLOY.md](DEPLOY.md)** for the
+full step-by-step Hetzner VPS walkthrough.
 
-Mem0 runs inside the **Kodi FastAPI backend** (`backend/`) and uses Qdrant as the vector store. Start Qdrant on the VPS (or locally for development):
+## Stack (current)
+
+- **backend** — FastAPI: Gemini Live voice WebSocket (`/v1/live`) + SSE agent loop.
+  Vector store is **Chroma**, embedded in the container (no Qdrant). All state
+  (Chroma DB, search cache, registered devices) lives in the `backend_data`
+  volume at `/app/data`.
+- **caddy** — reverse proxy; terminates TLS with automatic Let's Encrypt certs,
+  proxies HTTPS/WSS to `backend:8000`.
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-Bind addresses are `127.0.0.1` so Qdrant is not exposed publicly; only processes on the host (or the backend container if you later dockerize the API) should reach `localhost:6333`.
+## Required env (`backend/.env`)
 
-## VPS layout (Hetzner CX21 or similar)
+- `GEMINI_API_KEY` — interactive voice brain (Gemini Live)
+- `ANTHROPIC_API_KEY` — briefing + scheduled tasks (background)
+- `OPENAI_API_KEY` — Whisper STT fallback + Chroma/Mem0 embeddings
+- `BRAVE_API_KEY` — optional, web search
 
-1. Ubuntu 24.04, firewall: allow **22** (SSH) and **443** (HTTPS) only.
-2. Install Docker and run the compose file above.
-3. Run the Kodi backend as a **non-root** systemd service (see `backend/deploy/kodi-backend.service.example`).
-4. Terminate TLS with **Caddy** or **nginx** + Let’s Encrypt, reverse-proxying to `127.0.0.1:8000` (or your chosen uvicorn bind).
+`backend/.env` is gitignored. Copy it to the server manually (see DEPLOY.md §7).
 
-## Environment variables
+## VPS layout
 
-Copy `backend/.env.example` to `/etc/kodi/backend.env` (or similar) on the server. Never commit real keys.
+- Ubuntu 24.04, Hetzner CX22 (2 vCPU / 4 GB).
+- Firewall: allow **22** (SSH), **80** (cert issuance), **443** (HTTPS) only.
+- Containers use `restart: unless-stopped` — survive reboots automatically.
 
-## Operations
+## Operations notes
 
-See [OPS_SESSIONS_AND_LOGS.txt](OPS_SESSIONS_AND_LOGS.txt) for session scaling, tool timeouts, and logging notes.
-
-Required for full V1:
-
-- `ANTHROPIC_API_KEY`
-- `OPENAI_API_KEY` (Whisper)
-- `BRAVE_API_KEY` (optional until search is used)
-- `QDRANT_URL` (e.g. `http://127.0.0.1:6333`)
-- `MEM0_COLLECTION` (e.g. `kodi_memories`)
-
-Optional:
-
-- `OPENAI_API_KEY` also used by Mem0 default embedder if you use OpenAI embeddings (see `backend` config).
+See [OPS_SESSIONS_AND_LOGS.txt](OPS_SESSIONS_AND_LOGS.txt). Key point: session
+state is in-process memory, so run **one** uvicorn worker (the compose enforces
+`--workers 1`). Scaling to multiple workers needs shared session storage (Redis)
+first.

@@ -1,17 +1,32 @@
-# Kodi backend — replace YOUR_DOMAIN with your actual domain (e.g. kodi.example.com)
-YOUR_DOMAIN {
-    reverse_proxy localhost:8000
+# Kodi backend — Caddy reverse proxy with automatic HTTPS (Let's Encrypt).
+#
+# Replace BOTH placeholders:
+#   api.yourdomain.com  -> the domain/subdomain you pointed at the VPS (DNS A record)
+#   you@example.com     -> your email (Let's Encrypt expiry notices)
+#
+# Caddy auto-provisions and renews TLS. WebSocket (/v1/live) and SSE
+# (/v1/sessions/*) are proxied transparently. flush_interval -1 disables
+# response buffering so streaming works.
 
-    encode gzip
+{
+	email you@example.com
+}
 
-    header {
-        Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
-        X-Content-Type-Options nosniff
-        X-Frame-Options DENY
-    }
+api.yourdomain.com {
+	encode gzip
 
-    log {
-        output file /var/log/caddy/kodi_access.log
-        format json
-    }
+	reverse_proxy backend:8000 {
+		flush_interval -1
+	}
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+	}
+
+	log {
+		output file /data/kodi_access.log
+		format json
+	}
 }

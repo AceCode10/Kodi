@@ -1,36 +1,50 @@
-# Kodi V1 — local/VPS stack
-# Run from repo root: docker compose -f infra/docker-compose.yml up -d
-# Copy backend/.env.example to backend/.env and fill in API keys before starting.
+# Kodi V1 — production stack (Hetzner VPS).
+#
+#   docker compose -f infra/docker-compose.yml up -d --build
+#
+# Two containers on a private network:
+#   backend  FastAPI (Gemini Live WS + SSE agent). Not exposed publicly.
+#   caddy    Reverse proxy, terminates TLS (auto Let's Encrypt), proxies to backend.
+#
+# Before first run:
+#   1. Fill backend/.env with real API keys (GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).
+#   2. Edit infra/Caddyfile: set your domain + email.
+#   3. Point your domain's DNS A record at the VPS public IP.
+#
+# Vector store is Chroma, embedded in the backend container (no Qdrant needed).
+# All persistent state lives in the backend_data volume (/app/data): Chroma DB,
+# search cache, registered devices.
 
 services:
-  qdrant:
-    image: qdrant/qdrant:v1.12.5
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
-    environment:
-      QDRANT__SERVICE__GRPC_PORT: 6334
-
   backend:
     build:
       context: ../backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:8000:8000"
     env_file:
       - ../backend/.env
     volumes:
       - backend_data:/app/data
+    expose:
+      - "8000"
+    # One worker: session state is in-process memory (app.session_manager.sessions).
+    # Scaling to >1 worker needs shared session storage (Redis) first.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
     depends_on:
-      - qdrant
-    environment:
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: "6333"
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
-  qdrant_data:
   backend_data:
+  caddy_data:
+  caddy_config:
