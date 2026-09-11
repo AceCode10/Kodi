@@ -50,8 +50,16 @@ object DeviceToolExecutor {
         "authenticator", "trezor", "ledger",
     )
 
-    suspend fun execute(context: Context, cmd: CommandDto): String {
-        val name = cmd.toolName ?: return "No tool name."
+    /** Run one device tool. A [ToolFailure] anywhere inside becomes an error outcome. */
+    suspend fun execute(context: Context, cmd: CommandDto): ToolOutcome = try {
+        ToolOutcome(dispatch(context, cmd), isError = false)
+    } catch (e: ToolFailure) {
+        Log.w(TAG, "device tool ${cmd.toolName} failed: ${e.reason}")
+        ToolOutcome(e.reason, isError = true)
+    }
+
+    private suspend fun dispatch(context: Context, cmd: CommandDto): String {
+        val name = cmd.toolName ?: fail("No tool name.")
         val input = cmd.toolInput ?: JsonObject()
         return when (name) {
             "send_whatsapp_message" -> sendWhatsAppWithRetry(context, input)
@@ -77,35 +85,37 @@ object DeviceToolExecutor {
             "schedule_task" -> scheduleTask(context, input)
             "list_scheduled_tasks" -> listScheduledTasks(context)
             "cancel_scheduled_task" -> cancelScheduledTask(context, input)
-            else -> "Unsupported device tool: $name"
+            else -> fail("Unsupported device tool: $name")
         }
     }
 
     private suspend fun tapOnScreen(input: JsonObject): String {
         val text = input.optStr("text")?.trim().orEmpty()
-        if (text.isEmpty()) return "Provide text to tap."
+        if (text.isEmpty()) fail("Provide text to tap.")
         val partial = input.optBool("partial", true)
-        val svc = AccessibilityBridge.get() ?: return "Accessibility service not enabled."
-        val root = svc.waitForRoot(3000) ?: return "Could not read screen."
-        val node = svc.findByText(root, text, partial) ?: return "No tappable element matching \"$text\"."
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility service not enabled.")
+        val root = svc.waitForRoot(3000) ?: fail("Could not read screen.")
+        val node = svc.findByText(root, text, partial) ?: fail("No tappable element matching \"$text\".")
         val ok = svc.tapNode(node)
-        return if (ok) "Tapped \"$text\"." else "Tap on \"$text\" failed."
+        if (!ok) fail("Tap on \"$text\" failed.")
+        return "Tapped \"$text\"."
     }
 
     private suspend fun typeIntoField(input: JsonObject): String {
-        val text = input.optStr("text") ?: return "Provide text to type."
-        val svc = AccessibilityBridge.get() ?: return "Accessibility service not enabled."
+        val text = input.optStr("text") ?: fail("Provide text to type.")
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility service not enabled.")
         val ok = svc.typeIntoFocusedField(text)
-        return if (ok) "Typed text." else "No editable field on screen."
+        if (!ok) fail("No editable field on screen.")
+        return "Typed text."
     }
 
     private fun scheduleTask(context: Context, input: JsonObject): String {
         val whenIso = input.optStr("when_iso")?.trim().orEmpty()
         val task = input.optStr("task")?.trim().orEmpty()
         val id = input.optStr("id")?.trim().orEmpty().ifEmpty { UUID.randomUUID().toString() }
-        if (whenIso.isEmpty() || task.isEmpty()) return "Provide when_iso and task."
-        val whenMillis = parseLocalIso(whenIso) ?: return "Could not parse when_iso \"$whenIso\"."
-        if (whenMillis <= System.currentTimeMillis()) return "Scheduled time is in the past."
+        if (whenIso.isEmpty() || task.isEmpty()) fail("Provide when_iso and task.")
+        val whenMillis = parseLocalIso(whenIso) ?: fail("Could not parse when_iso \"$whenIso\".")
+        if (whenMillis <= System.currentTimeMillis()) fail("Scheduled time is in the past.")
         val entry = ScheduledTaskStore(context).upsert(
             ScheduledTask(id = id, whenMillis = whenMillis, text = task),
         )
@@ -129,8 +139,8 @@ object DeviceToolExecutor {
 
     private fun cancelScheduledTask(context: Context, input: JsonObject): String {
         val id = input.optStr("id")?.trim().orEmpty()
-        if (id.isEmpty()) return "Provide id."
-        val gone = ScheduledTaskStore(context).remove(id) ?: return "No task with id $id."
+        if (id.isEmpty()) fail("Provide id.")
+        val gone = ScheduledTaskStore(context).remove(id) ?: fail("No task with id $id.")
         TaskScheduler.cancel(context, gone.id, gone.text)
         return "Cancelled \"${gone.text}\"."
     }
@@ -160,32 +170,40 @@ object DeviceToolExecutor {
     }
 
     private suspend fun sendWhatsAppWithRetry(context: Context, input: JsonObject): String {
-        val first = sendWhatsAppOnce(context, input)
-        // Only retry pre-send failures. Any result starting with "Sent WhatsApp" means the
-        // Send button was tapped — retrying would deliver the same message twice.
-        if (first.startsWith("Sent WhatsApp")) return first
+        // Only pre-send failures unwind as ToolFailure. Once the Send button is tapped,
+        // sendWhatsAppOnce returns normally, so a retry can never duplicate a delivered
+        // message. If both attempts fail, report the first failure.
+        val first: ToolFailure
+        try {
+            return sendWhatsAppOnce(context, input)
+        } catch (e: ToolFailure) {
+            first = e
+        }
         delay(900)
-        val second = sendWhatsAppOnce(context, input)
-        return if (second.startsWith("Sent WhatsApp")) second else first
+        return try {
+            sendWhatsAppOnce(context, input)
+        } catch (_: ToolFailure) {
+            throw first
+        }
     }
 
     private suspend fun sendWhatsAppOnce(context: Context, input: JsonObject): String {
-        val contact = input.optStr("contact") ?: return "Missing contact."
-        val message = input.optStr("message") ?: return "Missing message."
+        val contact = input.optStr("contact") ?: fail("Missing contact.")
+        val message = input.optStr("message") ?: fail("Missing message.")
         val isGroup = input.optBool("group", false)
-        val svc = AccessibilityBridge.get() ?: return "Turn on Kodi accessibility first."
-        if (sensitiveForeground(svc)) return "I can't use that app here."
+        val svc = AccessibilityBridge.get() ?: fail("Turn on Kodi accessibility first.")
+        if (sensitiveForeground(svc)) fail("I can't use that app here.")
         val ok = svc.openAppPackage("com.whatsapp")
-        if (!ok) return "I can't find WhatsApp on this phone."
+        if (!ok) fail("I can't find WhatsApp on this phone.")
         delay(800)
-        var root = svc.waitForRoot(4000) ?: return "WhatsApp UI not ready."
+        var root = svc.waitForRoot(4000) ?: fail("WhatsApp UI not ready.")
 
         if (isGroup) {
             val groupNode = svc.findByText(root, contact, partial = true)
             if (groupNode != null) {
                 svc.tapNode(groupNode)
             } else {
-                return "Group '$contact' not found in WhatsApp."
+                fail("Group '$contact' not found in WhatsApp.")
             }
         } else {
             val searchHints = listOf("search", "search…", "search contacts")
@@ -198,13 +216,13 @@ object DeviceToolExecutor {
             delay(400)
             svc.typeIntoFocusedField(contact)
             delay(1200)
-            root = svc.waitForRoot(3000) ?: return "Could not open chat."
+            root = svc.waitForRoot(3000) ?: fail("Could not open chat.")
             val first = findFirstConversationRow(root)
             if (first != null) svc.tapNode(first) else svc.findByText(root, contact, true)?.let { svc.tapNode(it) }
         }
 
         delay(1000)
-        root = svc.waitForRoot(3000) ?: return "Conversation not open."
+        root = svc.waitForRoot(3000) ?: fail("Conversation not open.")
         svc.typeIntoFocusedField(message)
         delay(400)
         val send = svc.findByText(root, "send", partial = false)
@@ -212,7 +230,7 @@ object DeviceToolExecutor {
         // A pre-send failure (button missing / tap failed) is safe to retry; once Send is
         // tapped the message is out, so every path below reports "Sent WhatsApp" (no retry).
         val sendTapped = send != null && svc.tapNode(send)
-        if (!sendTapped) return "Could not find the WhatsApp send button for $contact."
+        if (!sendTapped) fail("Could not find the WhatsApp send button for $contact.")
         delay(800)
         val finalRoot = svc.waitForRoot(3000)
         val confirmed = finalRoot != null && verifySentMessage(finalRoot, message)
@@ -242,7 +260,7 @@ object DeviceToolExecutor {
     private suspend fun scroll(input: JsonObject): String {
         val direction = input.optStr("direction") ?: "down"
         val amount = input.get("amount")?.let { if (it is JsonPrimitive && it.isNumber) it.asInt else 1 } ?: 1
-        val svc = AccessibilityBridge.get() ?: return "Accessibility not enabled."
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility not enabled.")
         repeat(amount.coerceIn(1, 10)) {
             svc.scrollNode(direction)
             kotlinx.coroutines.delay(300)
@@ -252,25 +270,32 @@ object DeviceToolExecutor {
 
     private fun verifySentMessage(root: android.view.accessibility.AccessibilityNodeInfo?, message: String): Boolean {
         if (root == null) return false
-        val needle = message.take(30).lowercase()
+        val needle = message.take(30).lowercase().trim()
+        // An empty needle matches everything, which would confirm any send.
+        if (needle.isEmpty()) return false
         val q = ArrayDeque<android.view.accessibility.AccessibilityNodeInfo>()
         q.add(root)
         while (q.isNotEmpty()) {
             val n = q.removeFirst()
-            val t = n.text?.toString()?.lowercase() ?: ""
-            if (t.contains(needle)) return true
+            // When a send fails the text is still sitting in the compose box, so matching
+            // an editable node would report the failure as a confirmed delivery. Only a
+            // non-editable node (an actual chat bubble) counts as confirmation.
+            if (!n.isEditable) {
+                val t = n.text?.toString()?.lowercase() ?: ""
+                if (t.contains(needle)) return true
+            }
             for (i in 0 until n.childCount) n.getChild(i)?.let { q.add(it) }
         }
         return false
     }
 
     private suspend fun sendSms(context: Context, input: JsonObject): String {
-        val contact = input.optStr("contact") ?: return "Missing contact."
-        val message = input.optStr("message") ?: return "Missing message."
+        val contact = input.optStr("contact") ?: fail("Missing contact.")
+        val message = input.optStr("message") ?: fail("Missing message.")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            return "SMS permission not granted."
+            fail("SMS permission not granted.")
         }
-        val dest = resolvePhone(context, contact) ?: return "I don't recognise $contact. Can you check the spelling?"
+        val dest = resolvePhone(context, contact) ?: fail("I don't recognise $contact. Can you check the spelling?")
         return withContext(Dispatchers.IO) {
             try {
                 val sm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -279,7 +304,7 @@ object DeviceToolExecutor {
                     @Suppress("DEPRECATION")
                     SmsManager.getDefault()
                 }
-                if (sm == null) return@withContext "SMS service unavailable."
+                if (sm == null) fail("SMS service unavailable.")
                 val parts = sm.divideMessage(message)
                 if (parts.size > 1) {
                     sm.sendMultipartTextMessage(dest, null, parts, null, null)
@@ -289,17 +314,17 @@ object DeviceToolExecutor {
                 "SMS sent to $contact."
             } catch (e: Exception) {
                 Log.e(TAG, "sms", e)
-                "SMS failed: ${e.message}"
+                fail("SMS failed: ${e.message}")
             }
         }
     }
 
     private suspend fun call(context: Context, input: JsonObject): String {
-        val contact = input.optStr("contact") ?: return "Missing contact."
+        val contact = input.optStr("contact") ?: fail("Missing contact.")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) {
-            return "Phone permission not granted."
+            fail("Phone permission not granted.")
         }
-        val dest = resolvePhone(context, contact) ?: return "I don't recognise $contact. Can you check the spelling?"
+        val dest = resolvePhone(context, contact) ?: fail("I don't recognise $contact. Can you check the spelling?")
         return withContext(Dispatchers.Main) {
             try {
                 val intent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$dest"))
@@ -308,7 +333,7 @@ object DeviceToolExecutor {
                 "Calling $contact."
             } catch (e: Exception) {
                 Log.e(TAG, "call", e)
-                "Call failed: ${e.message}"
+                fail("Call failed: ${e.message}")
             }
         }
     }
@@ -326,7 +351,7 @@ object DeviceToolExecutor {
                     e.message ?: "unknown error"
                 }
             }
-            if (err != null) return "Could not open URL: $err"
+            if (err != null) fail("Could not open URL: $err")
             if (!readVisible) return "Opened browser."
             delay(2500)
             val svc = AccessibilityBridge.get()
@@ -338,17 +363,19 @@ object DeviceToolExecutor {
                 "Opened URL. Visible text (truncated):\n${text.take(6000)}"
             }
         }
-        val name = input.optStr("app_name") ?: return "Provide app_name or url."
+        val name = input.optStr("app_name") ?: fail("Provide app_name or url.")
         val pm = context.packageManager
         val pkg = resolvePackageForLabel(pm, name)
             ?: knownPackages[name.lowercase()]
-        if (pkg == null) return "Could not find app $name."
+        if (pkg == null) fail("Could not find app $name.")
         if (pkg !in AppAllowlist.BUILT_IN_PACKAGES && !AppAllowlist(context).isAllowed(pkg)) {
-            return "Kodi has not been granted access to $name ($pkg). " +
-                "Open Settings → Manage app access and toggle it on."
+            fail(
+                "Kodi has not been granted access to $name ($pkg). " +
+                    "Open Settings → Manage app access and toggle it on.",
+            )
         }
         val launch = pm.getLaunchIntentForPackage(pkg)
-        if (launch == null) return "App not launchable."
+        if (launch == null) fail("App not launchable.")
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         withContext(Dispatchers.Main) { context.startActivity(launch) }
         delay(500)
@@ -417,7 +444,7 @@ object DeviceToolExecutor {
     }
 
     private suspend fun toggleSetting(context: Context, input: JsonObject): String {
-        val key = input.optStr("setting")?.lowercase() ?: return "Missing setting."
+        val key = input.optStr("setting")?.lowercase() ?: fail("Missing setting.")
         val rawValue = input.get("value")
         val boolValue: Boolean? = when {
             rawValue is JsonPrimitive && rawValue.isBoolean -> rawValue.asBoolean
@@ -444,7 +471,7 @@ object DeviceToolExecutor {
                 }
                 "bluetooth" -> {
                     val bt = android.bluetooth.BluetoothAdapter.getDefaultAdapter()
-                    if (bt == null) return@withContext "Bluetooth not available on this device."
+                    if (bt == null) fail("Bluetooth not available on this device.")
                     val enable = boolValue ?: !bt.isEnabled
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -476,14 +503,14 @@ object DeviceToolExecutor {
                             "Brightness set to $level."
                         } catch (e: Exception) {
                             context.startActivity(Intent(Settings.ACTION_DISPLAY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                            "Could not set brightness — opened display settings."
+                            fail("Could not set brightness — opened display settings.")
                         }
                     } else {
                         context.startActivity(
                             Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
                                 Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         )
-                        "Brightness control needs a special permission. Please grant it in the screen that just opened."
+                        fail("Brightness control needs a special permission. Please grant it in the screen that just opened.")
                     }
                 }
                 else -> {
@@ -495,26 +522,25 @@ object DeviceToolExecutor {
     }
 
     private suspend fun getContacts(context: Context, input: JsonObject): String {
-        val name = input.optStr("name") ?: return "Missing name."
+        val name = input.optStr("name") ?: fail("Missing name.")
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            return "Contacts permission not granted."
+            fail("Contacts permission not granted.")
         }
-        val phone = resolvePhone(context, name)
-        return phone ?: "No contact named $name."
+        return resolvePhone(context, name) ?: fail("No contact named $name.")
     }
 
     private suspend fun readLastMessage(context: Context, input: JsonObject): String {
-        val contact = input.optStr("contact") ?: return "Missing contact."
+        val contact = input.optStr("contact") ?: fail("Missing contact.")
         val app = input.optStr("app")?.lowercase() ?: "whatsapp"
-        val svc = AccessibilityBridge.get() ?: return "Accessibility not enabled."
-        if (sensitiveForeground(svc)) return "Blocked in sensitive app."
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility not enabled.")
+        if (sensitiveForeground(svc)) fail("Blocked in sensitive app.")
         val pkg = when (app) {
             "sms", "messages" -> "com.google.android.apps.messaging"
             else -> "com.whatsapp"
         }
-        if (svc.openAppPackage(pkg).not()) return "App not installed for $app."
+        if (svc.openAppPackage(pkg).not()) fail("App not installed for $app.")
         delay(1000)
-        var root = svc.waitForRoot(4000) ?: return "UI not ready."
+        var root = svc.waitForRoot(4000) ?: fail("UI not ready.")
         val searchHints = listOf("search", "search…", "search contacts")
         for (hint in searchHints) {
             val n = svc.findByText(root, hint, partial = true)
@@ -523,11 +549,11 @@ object DeviceToolExecutor {
         delay(400)
         svc.typeIntoFocusedField(contact)
         delay(800)
-        root = svc.waitForRoot(3000) ?: return "Thread not found."
+        root = svc.waitForRoot(3000) ?: fail("Thread not found.")
         val row = findFirstConversationRow(root)
         row?.let { svc.tapNode(it) }
         delay(1000)
-        root = svc.waitForRoot(3000) ?: return "Could not read thread."
+        root = svc.waitForRoot(3000) ?: fail("Could not read thread.")
         val bubble = findLastMessageBubble(root)
         val text = bubble?.text?.toString() ?: "(no text found)"
         svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
@@ -579,12 +605,12 @@ object DeviceToolExecutor {
     }
 
     private suspend fun sendTelegram(context: Context, input: JsonObject): String {
-        val contact = input.optStr("contact") ?: return "Missing contact."
-        val message = input.optStr("message") ?: return "Missing message."
-        val svc = AccessibilityBridge.get() ?: return "Accessibility not enabled."
-        if (svc.openAppPackage("org.telegram.messenger").not()) return "Telegram not installed."
+        val contact = input.optStr("contact") ?: fail("Missing contact.")
+        val message = input.optStr("message") ?: fail("Missing message.")
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility not enabled.")
+        if (svc.openAppPackage("org.telegram.messenger").not()) fail("Telegram not installed.")
         delay(1200)
-        var root = svc.waitForRoot(4000) ?: return "Telegram UI not ready."
+        var root = svc.waitForRoot(4000) ?: fail("Telegram UI not ready.")
         val searchHints = listOf("search", "search telegram")
         for (hint in searchHints) {
             val n = svc.findByText(root, hint, partial = true)
@@ -593,18 +619,18 @@ object DeviceToolExecutor {
         delay(400)
         svc.typeIntoFocusedField(contact)
         delay(800)
-        root = svc.waitForRoot(3000) ?: return "Contact not found in Telegram."
+        root = svc.waitForRoot(3000) ?: fail("Contact not found in Telegram.")
         val row = findFirstConversationRow(root)
         if (row != null) svc.tapNode(row) else svc.findByText(root, contact, partial = true)?.let { svc.tapNode(it) }
         delay(1000)
-        root = svc.waitForRoot(3000) ?: return "Chat not open."
+        root = svc.waitForRoot(3000) ?: fail("Chat not open.")
         svc.typeIntoFocusedField(message)
         delay(400)
         val send = svc.findByText(root, "send", partial = false)
             ?: svc.findByText(svc.rootInActiveWindow, "send", partial = true)
         // Same contract as WhatsApp: once Send is tapped, never report a retryable failure.
         val sendTapped = send != null && svc.tapNode(send)
-        if (!sendTapped) return "Could not find the Telegram send button for $contact."
+        if (!sendTapped) fail("Could not find the Telegram send button for $contact.")
         delay(800)
         val finalRoot = svc.waitForRoot(2000)
         val confirmed = finalRoot != null && verifySentMessage(finalRoot, message)
@@ -617,9 +643,9 @@ object DeviceToolExecutor {
     }
 
     private suspend fun sendEmail(context: Context, input: JsonObject): String {
-        val to = input.optStr("to") ?: return "Missing recipient."
-        val subject = input.optStr("subject") ?: return "Missing subject."
-        val body = input.optStr("body") ?: return "Missing body."
+        val to = input.optStr("to") ?: fail("Missing recipient.")
+        val subject = input.optStr("subject") ?: fail("Missing subject.")
+        val body = input.optStr("body") ?: fail("Missing body.")
         return withContext(Dispatchers.Main) {
             try {
                 val intent = Intent(Intent.ACTION_SEND).apply {
@@ -632,15 +658,15 @@ object DeviceToolExecutor {
                 context.startActivity(Intent.createChooser(intent, "Send email").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 "Opened email composer to $to."
             } catch (e: Exception) {
-                "Could not open email app: ${e.message}"
+                fail("Could not open email app: ${e.message}")
             }
         }
     }
 
     private suspend fun createCalendarEvent(context: Context, input: JsonObject): String {
-        val title = input.optStr("title") ?: return "Missing title."
-        val date = input.optStr("date") ?: return "Missing date."
-        val time = input.optStr("time") ?: return "Missing time."
+        val title = input.optStr("title") ?: fail("Missing title.")
+        val date = input.optStr("date") ?: fail("Missing date.")
+        val time = input.optStr("time") ?: fail("Missing time.")
         val durationMinutes = input.get("duration_minutes")?.let {
             if (it is JsonPrimitive && it.isNumber) it.asInt else 60
         } ?: 60
@@ -667,16 +693,16 @@ object DeviceToolExecutor {
                 context.startActivity(intent)
                 "Opened calendar to create event: $title on $date at $time."
             } catch (e: Exception) {
-                "Could not create calendar event: ${e.message}"
+                fail("Could not create calendar event: ${e.message}")
             }
         }
     }
 
     private suspend fun setAlarm(context: Context, input: JsonObject): String {
         val hour = input.get("hour")?.let { if (it is JsonPrimitive && it.isNumber) it.asInt else null }
-            ?: return "Missing hour."
+            ?: fail("Missing hour.")
         val minute = input.get("minute")?.let { if (it is JsonPrimitive && it.isNumber) it.asInt else null }
-            ?: return "Missing minute."
+            ?: fail("Missing minute.")
         val label = input.optStr("label")
         return withContext(Dispatchers.Main) {
             try {
@@ -690,7 +716,7 @@ object DeviceToolExecutor {
                 context.startActivity(intent)
                 "Alarm set for %02d:%02d.".format(hour, minute)
             } catch (e: Exception) {
-                "Could not set alarm: ${e.message}"
+                fail("Could not set alarm: ${e.message}")
             }
         }
     }
@@ -698,7 +724,7 @@ object DeviceToolExecutor {
     private suspend fun setTimer(context: Context, input: JsonObject): String {
         val durationSeconds = input.get("duration_seconds")?.let {
             if (it is JsonPrimitive && it.isNumber) it.asInt else null
-        } ?: return "Missing duration."
+        } ?: fail("Missing duration.")
         val label = input.optStr("label")
         return withContext(Dispatchers.Main) {
             try {
@@ -713,13 +739,13 @@ object DeviceToolExecutor {
                 val secs = durationSeconds % 60
                 "Timer set for ${if (mins > 0) "${mins}m " else ""}${if (secs > 0) "${secs}s" else ""}."
             } catch (e: Exception) {
-                "Could not set timer: ${e.message}"
+                fail("Could not set timer: ${e.message}")
             }
         }
     }
 
     private suspend fun playMedia(context: Context, input: JsonObject): String {
-        val query = input.optStr("query") ?: return "Missing query."
+        val query = input.optStr("query") ?: fail("Missing query.")
         val app = input.optStr("app")?.lowercase() ?: "auto"
         return withContext(Dispatchers.Main) {
             try {
@@ -740,13 +766,13 @@ object DeviceToolExecutor {
                 context.startActivity(intent)
                 "Opening $query."
             } catch (e: Exception) {
-                "Could not open media app: ${e.message}"
+                fail("Could not open media app: ${e.message}")
             }
         }
     }
 
     private suspend fun mediaControl(context: Context, input: JsonObject): String {
-        val action = input.optStr("action")?.lowercase() ?: return "Missing action."
+        val action = input.optStr("action")?.lowercase() ?: fail("Missing action.")
         return withContext(Dispatchers.Main) {
             val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
             val keyCode = when (action) {
@@ -754,7 +780,7 @@ object DeviceToolExecutor {
                 "next" -> android.view.KeyEvent.KEYCODE_MEDIA_NEXT
                 "previous" -> android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS
                 "stop" -> android.view.KeyEvent.KEYCODE_MEDIA_STOP
-                else -> return@withContext "Unknown media action: $action"
+                else -> fail("Unknown media action: $action")
             }
             am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode))
             am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, keyCode))
@@ -763,7 +789,7 @@ object DeviceToolExecutor {
     }
 
     private suspend fun navigateTo(context: Context, input: JsonObject): String {
-        val destination = input.optStr("destination") ?: return "Missing destination."
+        val destination = input.optStr("destination") ?: fail("Missing destination.")
         return withContext(Dispatchers.Main) {
             try {
                 val uri = Uri.parse("google.navigation:q=${Uri.encode(destination)}&mode=d")
@@ -781,15 +807,15 @@ object DeviceToolExecutor {
                 }
                 "Navigating to $destination."
             } catch (e: Exception) {
-                "Could not open navigation: ${e.message}"
+                fail("Could not open navigation: ${e.message}")
             }
         }
     }
 
     private suspend fun describeScreen(): String {
-        val svc = AccessibilityBridge.get() ?: return "Accessibility not enabled."
-        if (sensitiveForeground(svc)) return "I can't read the screen in a sensitive app."
-        val root = svc.rootInActiveWindow ?: return "Screen not readable."
+        val svc = AccessibilityBridge.get() ?: fail("Accessibility not enabled.")
+        if (sensitiveForeground(svc)) fail("I can't read the screen in a sensitive app.")
+        val root = svc.rootInActiveWindow ?: fail("Screen not readable.")
         val text = svc.collectVisibleText(root)
         return if (text.isBlank()) "Screen appears empty or unreadable." else text
     }
@@ -800,7 +826,7 @@ object DeviceToolExecutor {
     }
 
     private fun readNotifications(input: JsonObject): String {
-        if (!NotificationBridge.connected) return "Notification listener not enabled. Enable it in Settings > Notifications > Special app access."
+        if (!NotificationBridge.connected) fail("Notification listener not enabled. Enable it in Settings > Notifications > Special app access.")
         val count = input.get("count")?.let { if (it is JsonPrimitive && it.isNumber) it.asInt else 5 } ?: 5
         val entries = NotificationBridge.recent(count * 3).filterNot { isSensitivePackage(it.packageName) }.take(count)
         if (entries.isEmpty()) return "No notifications."

@@ -3,6 +3,7 @@ package ai.kodi.app.voice
 import android.content.Context
 import android.util.Log
 import ai.kodi.app.accessibility.DeviceToolExecutor
+import ai.kodi.app.accessibility.ToolOutcome
 import ai.kodi.app.data.CommandDto
 import ai.kodi.app.data.HmacSigner
 import ai.kodi.app.data.TranscriptRole
@@ -123,20 +124,20 @@ class LiveSession(
         val name = obj.get("name")?.asString ?: return
         val input = obj.getAsJsonObject("input")
         scope.launch {
-            val content = try {
+            val outcome = try {
                 DeviceToolExecutor.execute(
                     context,
                     CommandDto(status = "device_action", toolUseId = id, toolName = name, toolInput = input),
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "device tool $name", e)
-                "Device tool failed: ${e.message ?: "error"}"
+                ToolOutcome("Device tool failed: ${e.message ?: "error"}", isError = true)
             }
             val reply = JsonObject().apply {
                 addProperty("type", "tool_result")
                 addProperty("id", id)
-                addProperty("content", content)
-                addProperty("isError", false)
+                addProperty("content", outcome.content)
+                addProperty("isError", outcome.isError)
             }
             webSocket.send(gson.toJson(reply))
         }

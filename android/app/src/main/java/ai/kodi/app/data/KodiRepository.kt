@@ -2,6 +2,7 @@ package ai.kodi.app.data
 
 import android.content.Context
 import ai.kodi.app.BuildConfig
+import ai.kodi.app.accessibility.ToolOutcome
 import ai.kodi.app.voice.OnDeviceSpeech
 import com.google.gson.Gson
 import okhttp3.CertificatePinner
@@ -159,7 +160,7 @@ class KodiRepository(
         firstRequest: Request,
         onTranscript: (String) -> Unit,
         onDelta: (String) -> Unit,
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         val client = sseClient()
         var request = firstRequest
@@ -173,10 +174,14 @@ class KodiRepository(
                         toolName = r.toolName,
                         toolInput = r.toolInput,
                     )
-                    val toolResult = toolHandler(cmd)
+                    val outcome = toolHandler(cmd)
                     request = toolResultRequest(
                         sessionId,
-                        ToolResultDto(toolUseId = r.toolUseId, content = toolResult, isError = false),
+                        ToolResultDto(
+                            toolUseId = r.toolUseId,
+                            content = outcome.content,
+                            isError = outcome.isError,
+                        ),
                     )
                 }
                 is SseResult.Error -> throw SseException(r.message, r.httpCode)
@@ -188,7 +193,7 @@ class KodiRepository(
         wav: ByteArray,
         onTranscript: (String) -> Unit,
         onDelta: (String) -> Unit,
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         val ctx = ClientContext.snapshotHeader(context)
         var session = ensureSession()
@@ -206,7 +211,7 @@ class KodiRepository(
     private suspend fun runTextStreaming(
         text: String,
         onDelta: (String) -> Unit,
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         val ctx = ClientContext.snapshotHeader(context)
         var session = ensureSession()
@@ -225,7 +230,7 @@ class KodiRepository(
     suspend fun runText(
         text: String,
         onDelta: (String) -> Unit = {},
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         transcripts?.add(TranscriptRole.USER, text)
         val reply = runTextStreaming(text, onDelta, toolHandler)
@@ -242,7 +247,7 @@ class KodiRepository(
         appContext: Context,
         onTranscript: (String) -> Unit = {},
         onDelta: (String) -> Unit = {},
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         val logTranscript: (String) -> Unit = { t ->
             transcripts?.add(TranscriptRole.USER, t)
@@ -266,7 +271,7 @@ class KodiRepository(
     private suspend fun fallbackLocalStt(
         appContext: Context,
         onDelta: (String) -> Unit,
-        toolHandler: suspend (CommandDto) -> String,
+        toolHandler: suspend (CommandDto) -> ToolOutcome,
     ): String {
         val text = OnDeviceSpeech.transcribeOrNull(appContext)
         if (text.isNullOrBlank()) {

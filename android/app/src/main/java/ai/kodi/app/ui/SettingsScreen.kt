@@ -67,6 +67,7 @@ fun SettingsScreen(
     var url by remember { mutableStateOf(prefs.backendBaseUrl) }
     var pins by remember { mutableStateOf(prefs.certificatePins) }
     var wakeWord by remember { mutableStateOf(prefs.wakeWordEnabled) }
+    var liveMode by remember { mutableStateOf(prefs.liveModeEnabled) }
     var dynamicColor by remember { mutableStateOf(prefs.dynamicColor) }
     var briefing by remember { mutableStateOf(prefs.briefingEnabled) }
     var briefingHour by remember { mutableStateOf(prefs.briefingHour) }
@@ -166,6 +167,18 @@ fun SettingsScreen(
                     } else {
                         context.stopService(Intent(context, KodiVoiceService::class.java))
                     }
+                },
+            )
+
+            ToggleRow(
+                title = "Live conversation mode",
+                subtitle = "Stream audio both ways for a natural back-and-forth. " +
+                    "Falls back to the single-turn pipeline if it can't connect.",
+                checked = liveMode,
+                enabled = true,
+                onCheckedChange = {
+                    liveMode = it
+                    prefs.liveModeEnabled = it
                 },
             )
 
