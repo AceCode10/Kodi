@@ -5,7 +5,9 @@ import logging
 import re
 import secrets
 import time
+import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from collections.abc import Iterator
@@ -20,6 +22,7 @@ from .config import get_settings
 from .devices_store import GRANT_HOME_ASSISTANT, ensure_setup_token, register_device
 from .hmac_auth import verify_request_hmac
 from .learning import compact_lessons, detect_correction, get_lessons, reflect_on_turn
+from .observability import configure_logging, new_turn, prune_traces, request_id_var, turn_id_var
 from .memory_service import (
     memory_add_turn,
     memory_forget_all,
@@ -32,12 +35,12 @@ from .memory_service import (
 from .session_manager import sessions
 from .stt import transcribe_wav
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _START_TIME = time.time()
 
 _settings = get_settings()
+configure_logging()
 if _settings.sentry_dsn:
     try:
         import sentry_sdk
@@ -52,11 +55,32 @@ if _settings.sentry_dsn:
     except Exception:
         logger.exception("Sentry init failed")
 
-app = FastAPI(title="Kodi Backend", version="1.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    removed = prune_traces()
+    if removed:
+        logger.info("pruned %d expired trace files", removed)
+    yield
+
+
+app = FastAPI(title="Kodi Backend", version="1.0.0", lifespan=_lifespan)
 
 from .live_ws import router as live_router  # noqa: E402
 
 app.include_router(live_router)
+
+
+@app.middleware("http")
+async def _bind_request_id(request: Request, call_next):
+    """Tag every log line from this request with a correlatable id."""
+    rid = request.headers.get("X-Request-Id") or uuid.uuid4().hex[:16]
+    token = request_id_var.set(rid)
+    try:
+        response = await call_next(request)
+    finally:
+        request_id_var.reset(token)
+    response.headers["X-Request-Id"] = rid
+    return response
 
 _SETUP_TOKEN = _settings.kodi_setup_token.strip() or ensure_setup_token(_settings.data_dir)
 if not _settings.kodi_setup_token.strip():
@@ -274,13 +298,19 @@ def _agent_event_stream(
     outcome: dict[str, Any],
     *,
     emit_transcript: bool,
+    stt_ms: int | None = None,
 ) -> Iterator[dict[str, Any]]:
+    st.trace = new_turn(device_id, transcript)
+    if stt_ms is not None:
+        st.trace.stages["stt_ms"] = stt_ms
+
     if emit_transcript:
         yield {"type": "transcript", "text": transcript}
 
     forget_reply = _forget_preprocess(transcript, device_id)
     if forget_reply:
         outcome["done_text"] = forget_reply
+        _finish_trace(st, forget_reply)
         yield {"type": "done", "assistantText": forget_reply}
         return
 
@@ -298,13 +328,28 @@ def _agent_event_stream(
     for ev in _stream_agent_events(st):
         if ev.get("type") == "done":
             outcome["done_text"] = ev.get("assistantText", "")
+            _finish_trace(st, outcome["done_text"])
         yield ev
 
 
+def _finish_trace(st: Any, assistant_text: str) -> None:
+    """Close out the turn trace. A turn ends only at `done`, never at a device_action."""
+    trace = getattr(st, "trace", None)
+    if trace is None:
+        return
+    trace.assistant_text = assistant_text
+    trace.finish()
+    st.trace = None
+
+
 def _toolresult_event_stream(st: Any, outcome: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    trace = getattr(st, "trace", None)
+    if trace is not None:
+        turn_id_var.set(trace.turn_id)
     for ev in _stream_agent_events(st):
         if ev.get("type") == "done":
             outcome["done_text"] = ev.get("assistantText", "")
+            _finish_trace(st, outcome["done_text"])
         yield ev
 
 
@@ -330,6 +375,7 @@ async def session_audio(
     if not wav_bytes:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty body")
 
+    stt_started = time.time()
     try:
         # Whisper is a blocking HTTP call; running it inline would stall the event loop
         # for the whole transcription and serialise every other request behind it.
@@ -342,7 +388,15 @@ async def session_audio(
 
     ctx = _decode_client_context(x_kodi_client_context)
     outcome: dict[str, Any] = {"done_text": None}
-    gen = _agent_event_stream(st, transcript, device_id, ctx, outcome, emit_transcript=True)
+    gen = _agent_event_stream(
+        st,
+        transcript,
+        device_id,
+        ctx,
+        outcome,
+        emit_transcript=True,
+        stt_ms=int((time.time() - stt_started) * 1000),
+    )
     background_tasks.add_task(_post_turn, device_id, transcript, st, outcome)
     return StreamingResponse(_sse(gen), media_type="text/event-stream", headers=_SSE_HEADERS)
 
@@ -462,10 +516,22 @@ async def session_tool_result(
     if timed_out and st.pending_device_tool:
         tool_use_id = st.pending_device_tool.get("tool_use_id") or tool_use_id
 
+    pending = st.pending_device_tool or {}
+    elapsed_ms = int((time.time() - (st.pending_device_since or time.time())) * 1000)
+
     if timed_out:
         agent_loop.apply_tool_result(st, tool_use_id, "Device tool timed out.", True)
     else:
         agent_loop.apply_tool_result(st, tool_use_id, body.content, body.is_error)
+
+    trace = getattr(st, "trace", None)
+    if trace is not None and pending.get("name"):
+        trace.record_tool(
+            name=pending["name"],
+            kind="device",
+            ms=elapsed_ms,
+            is_error=timed_out or body.is_error,
+        )
 
     outcome: dict[str, Any] = {"done_text": None}
     gen = _toolresult_event_stream(st, outcome)

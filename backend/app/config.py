@@ -35,6 +35,9 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
     log_retention_days: int = 30
+    # Write the user's words and the assistant's reply into turn traces. Off by
+    # default - a real deployment should not persist speech to disk. Evals enable it.
+    trace_include_text: bool = False
 
     tool_timeout_seconds: float = 10.0
     llm_timeout_seconds: float = 15.0

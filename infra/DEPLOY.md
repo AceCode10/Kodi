@@ -183,6 +183,15 @@ https://api.yourdomain.com
 ```
 
 The app only accepts `https://` URLs (it derives the `wss://` voice socket from it).
+
+Onboarding also asks for a **setup token**. Registration is never open, so you need
+the value of `KODI_SETUP_TOKEN` from `backend/.env`. If you left it blank, the
+backend generated one on first boot — read it back with:
+
+```bash
+docker compose exec backend cat /app/data/setup_token.txt
+```
+
 Register the device, then test: voice round-trip, a device tool, barge-in, and
 fallback (the app drops to the SSE+Whisper path if the WebSocket fails).
 

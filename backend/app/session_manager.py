@@ -17,6 +17,9 @@ class SessionState:
     had_error: bool = False
     pending_device_tool: dict[str, Any] | None = None
     pending_device_since: float | None = None
+    # Trace for the in-flight turn. A turn spans audio -> device_action ->
+    # tool-result -> done, i.e. several requests, so it cannot live on one of them.
+    trace: Any = None
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
     lock: RLock = field(default_factory=RLock)

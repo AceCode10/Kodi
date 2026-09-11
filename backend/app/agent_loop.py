@@ -10,6 +10,7 @@ import anthropic
 from .claude_tools import DEVICE_TOOL_NAMES, SERVER_TOOL_NAMES, TOOLS
 from .config import KODI_SYSTEM_PROMPT, get_settings
 from .memory_service import memory_search
+from .observability import TurnTrace
 from .search_service import search_web
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,10 @@ def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_timeout_seconds)
     max_inner = 16
+    trace: TurnTrace | None = getattr(state, "trace", None)
+    if trace is not None:
+        trace.provider = "anthropic"
+        trace.model = settings.anthropic_model
 
     for _ in range(max_inner):
         if state.tools_used_this_command >= settings.max_tools_per_command:
@@ -195,6 +200,7 @@ def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
 
         buffer = ""
         full_text = ""
+        llm_started = time.time()
         try:
             with client.messages.stream(
                 model=settings.anthropic_model,
@@ -212,10 +218,17 @@ def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
                         if s:
                             yield {"type": "delta", "text": s}
                 final = stream.get_final_message()
+            if trace is not None:
+                trace.record_usage(getattr(final, "usage", None))
         except Exception as exc:
             logger.exception("claude messages.stream failed")
             yield {"type": "error", "message": f"LLM failed: {exc!s}."}
             return
+
+        if trace is not None:
+            trace.stages["llm_ms"] = trace.stages.get("llm_ms", 0) + int(
+                (time.time() - llm_started) * 1000
+            )
 
         content = final.content
         tool_blocks = [b for b in content if (b.type if hasattr(b, "type") else b.get("type")) == "tool_use"]
@@ -249,8 +262,16 @@ def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
 
         if name in SERVER_TOOL_NAMES:
             state.tools_used_this_command += 1
+            tool_started = time.time()
             out = _execute_server_tool(name, inp, transcript=state.last_transcript, user_id=state.device_id)
             truncated_out = out[:6000] if len(out) > 6000 else out
+            if trace is not None:
+                trace.record_tool(
+                    name=name,
+                    kind="server",
+                    ms=int((time.time() - tool_started) * 1000),
+                    is_error=_is_error_result(truncated_out),
+                )
             with state.lock:
                 if _is_error_result(truncated_out):
                     state.had_error = True

@@ -235,6 +235,7 @@ private fun OnboardingBackend(prefs: KodiPrefs, onNext: () -> Unit) {
     var url by remember { mutableStateOf(prefs.backendBaseUrl) }
     var status by remember { mutableStateOf("") }
     var pins by remember { mutableStateOf(prefs.certificatePins) }
+    var setupToken by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val app = LocalContext.current.applicationContext as KodiApplication
@@ -254,6 +255,19 @@ private fun OnboardingBackend(prefs: KodiPrefs, onNext: () -> Unit) {
             label = { Text("HTTPS base URL") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+        )
+        OutlinedTextField(
+            value = setupToken,
+            onValueChange = { setupToken = it },
+            label = { Text("Setup token") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            supportingText = {
+                Text(
+                    "From your backend: the KODI_SETUP_TOKEN you set, or the one it generated " +
+                        "on first boot (in the server logs, and data/setup_token.txt).",
+                )
+            },
         )
         OutlinedTextField(
             value = pins,
@@ -307,7 +321,7 @@ private fun OnboardingBackend(prefs: KodiPrefs, onNext: () -> Unit) {
                             onNext()
                             return@launch
                         }
-                        val reg = app.repository.registerDevice(null)
+                        val reg = app.repository.registerDevice(setupToken.trim().ifBlank { null })
                         reg.onSuccess { r ->
                             prefs.deviceId = r.deviceId
                             prefs.apiSecret = r.apiSecret
