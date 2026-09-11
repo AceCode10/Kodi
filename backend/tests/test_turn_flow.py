@@ -161,3 +161,96 @@ def test_forget_command_short_circuits_before_the_model(app_env, monkeypatch):
     assert called == []
     (trace,) = _traces(tmp_path)
     assert trace["assistant_text"] == "Forgot the last memory."
+
+
+def _tool_result(client, device_id, secret, session_id, tool_use_id, content, is_error=False):
+    path = f"/v1/sessions/{session_id}/tool-result"
+    body = json.dumps(
+        {"toolUseId": tool_use_id, "content": content, "isError": is_error}
+    ).encode()
+    headers = {
+        "X-Kodi-Device-Id": device_id,
+        "Content-Type": "application/json",
+        **_sign(secret, "POST", path, body),
+    }
+    return client.post(path, content=body, headers=headers)
+
+
+def test_full_round_trip_records_the_device_tool_on_one_trace(app_env, monkeypatch):
+    """A turn spanning three requests produces exactly one trace, with the tool on it."""
+    main, tmp_path = app_env
+
+    calls = {"n": 0}
+
+    def fake_stream(state):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            state.pending_device_tool = {"tool_use_id": "tu_1", "name": "send_sms", "input": {}}
+            state.pending_device_since = time.time()
+            yield {
+                "type": "device_action",
+                "tool_use_id": "tu_1",
+                "tool_name": "send_sms",
+                "tool_input": {"contact": "Amara", "message": "running late"},
+            }
+        else:
+            yield {"type": "done", "assistant_text": "Sent."}
+
+    monkeypatch.setattr(main.agent_loop, "run_agent_step_streaming", fake_stream)
+    monkeypatch.setattr(main.agent_loop, "apply_tool_result", lambda *a, **k: None)
+
+    with TestClient(main.app) as client:
+        device_id, secret = _pair(client)
+        session_id = _open_session(client, device_id, secret)
+
+        first = _say(client, device_id, secret, session_id, "text Amara running late")
+        assert "event: device_action" in first.text
+        assert _traces(tmp_path) == []
+
+        second = _tool_result(client, device_id, secret, session_id, "tu_1", "SMS sent to Amara.")
+        assert "event: done" in second.text
+
+    (trace,) = _traces(tmp_path)
+    assert trace["transcript"] == "text Amara running late"
+    assert trace["assistant_text"] == "Sent."
+    assert [(t["name"], t["kind"], t["is_error"]) for t in trace["tools"]] == [
+        ("send_sms", "device", False)
+    ]
+    assert trace["had_error"] is False
+
+
+def test_a_failed_device_tool_marks_the_trace(app_env, monkeypatch):
+    """The whole point of the isError plumbing: a failure has to reach the trace."""
+    main, tmp_path = app_env
+
+    calls = {"n": 0}
+
+    def fake_stream(state):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            state.pending_device_tool = {"tool_use_id": "tu_1", "name": "send_sms", "input": {}}
+            state.pending_device_since = time.time()
+            yield {
+                "type": "device_action",
+                "tool_use_id": "tu_1",
+                "tool_name": "send_sms",
+                "tool_input": {},
+            }
+        else:
+            yield {"type": "done", "assistant_text": "I couldn't send that."}
+
+    monkeypatch.setattr(main.agent_loop, "run_agent_step_streaming", fake_stream)
+    monkeypatch.setattr(main.agent_loop, "apply_tool_result", lambda *a, **k: None)
+
+    with TestClient(main.app) as client:
+        device_id, secret = _pair(client)
+        session_id = _open_session(client, device_id, secret)
+        _say(client, device_id, secret, session_id, "text Amara")
+        _tool_result(
+            client, device_id, secret, session_id, "tu_1",
+            "SMS permission not granted.", is_error=True,
+        )
+
+    (trace,) = _traces(tmp_path)
+    assert trace["had_error"] is True
+    assert trace["tools"][0]["is_error"] is True
