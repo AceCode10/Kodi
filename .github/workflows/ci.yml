@@ -2,8 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # Feature branches build too: the Android module cannot be compiled in every
+    # development environment, so CI is often the first compiler to see it.
+    branches: [main, master, 'claude/**', 'feat/**', 'fix/**']
   pull_request:
+  workflow_dispatch:
 
 jobs:
   android:
