@@ -95,13 +95,37 @@ def memory_add_turn(user_id: str, user_text: str, assistant_text: str = "") -> N
         logger.warning("memory add failed (non-blocking): %s", exc)
 
 
+def memory_get_all(user_id: str) -> list[dict]:
+    """Every stored record for a namespace, as a list of dicts.
+
+    Mem0's `get_all` has been spelled both `get_all(user_id=...)` and
+    `get_all(filters={"user_id": ...})` across versions, and this codebase used both.
+    Funnel every caller through here so there is one place to correct, and accept
+    either signature rather than failing closed on a dependency bump.
+    """
+    mem = get_memory()
+    if mem is False:
+        return []
+    try:
+        out = mem.get_all(filters={"user_id": user_id})
+    except TypeError:
+        out = mem.get_all(user_id=user_id)
+    except Exception as exc:
+        logger.warning("memory get_all failed: %s", exc)
+        return []
+    if isinstance(out, dict):
+        results = out.get("results") or []
+    else:
+        results = out or []
+    return [r for r in results if isinstance(r, dict)]
+
+
 def memory_forget_last(user_id: str) -> str:
     mem = get_memory()
     if mem is False:
         return "Memory is offline."
     try:
-        out = mem.get_all(filters={"user_id": user_id})
-        results = out.get("results") or []
+        results = memory_get_all(user_id)
         if not results:
             return "Nothing to forget."
         sorted_results = sorted(results, key=lambda r: r.get("created_at") or "", reverse=True)
@@ -163,8 +187,7 @@ def refresh_user_profile(user_id: str) -> None:
     if not settings.openai_api_key:
         return
     try:
-        out = mem.get_all(filters={"user_id": user_id})
-        results = out.get("results") or []
+        results = memory_get_all(user_id)
         facts = [r.get("memory") or r.get("text") or "" for r in results]
         facts = [f for f in facts if f]
         if not facts:

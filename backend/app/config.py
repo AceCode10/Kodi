@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     home_assistant_url: str = ""
     home_assistant_token: str = ""
+    # Grant Home Assistant control to devices at registration time. Off by default:
+    # HA actuates hardware in the user's home, so it is not implied by pairing.
+    home_assistant_auto_grant: bool = False
 
 
 @lru_cache

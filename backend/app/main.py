@@ -3,6 +3,7 @@ import binascii
 import json
 import logging
 import re
+import secrets
 import time
 from collections import deque
 from typing import Annotated, Any
@@ -11,11 +12,12 @@ from collections.abc import Iterator
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import AliasChoices, BaseModel, Field
 
 from . import agent_loop
 from .config import get_settings
-from .devices_store import register_device
+from .devices_store import GRANT_HOME_ASSISTANT, ensure_setup_token, register_device
 from .hmac_auth import verify_request_hmac
 from .learning import compact_lessons, detect_correction, get_lessons, reflect_on_turn
 from .memory_service import (
@@ -55,6 +57,15 @@ app = FastAPI(title="Kodi Backend", version="1.0.0")
 from .live_ws import router as live_router  # noqa: E402
 
 app.include_router(live_router)
+
+_SETUP_TOKEN = _settings.kodi_setup_token.strip() or ensure_setup_token(_settings.data_dir)
+if not _settings.kodi_setup_token.strip():
+    logger.warning(
+        "KODI_SETUP_TOKEN is not set; generated one and stored it in %s. "
+        "Send it as X-Kodi-Setup-Token when pairing a device: %s",
+        _settings.data_dir / "setup_token.txt",
+        _SETUP_TOKEN,
+    )
 
 _register_by_ip: dict[str, deque[float]] = {}
 _forget_all_pending_until: dict[str, float] = {}
@@ -99,10 +110,15 @@ def devices_register(
     x_kodi_setup_token: Annotated[str | None, Header(alias="X-Kodi-Setup-Token")] = None,
 ) -> RegisterResponse:
     settings = get_settings()
-    if settings.kodi_setup_token and x_kodi_setup_token != settings.kodi_setup_token:
+    # Registration is never open: an unauthenticated caller who finds this URL would
+    # otherwise get a working credential and burn the operator's API keys.
+    if not secrets.compare_digest(x_kodi_setup_token or "", _SETUP_TOKEN):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid setup token")
     _check_register_rate(request)
-    device_id, secret = register_device(settings.devices_store_path, settings.kodi_master_secret)
+    grants = [GRANT_HOME_ASSISTANT] if settings.home_assistant_auto_grant else []
+    device_id, secret = register_device(
+        settings.devices_store_path, settings.kodi_master_secret, grants=grants
+    )
     logger.info("Registered device %s", device_id)
     return RegisterResponse(device_id=device_id, api_secret=secret)
 
@@ -131,21 +147,46 @@ class TranscriptBody(BaseModel):
     text: str = Field(..., min_length=1, max_length=4000)
 
 
-def _forget_preprocess(transcript: str, user_id: str) -> str | None:
-    t = transcript.lower()
-    now = time.time()
-    if "forget that" in t and not re.search(r"forget\s+everything", t):
-        return memory_forget_last(user_id)
+# These intercept the utterance before the model sees it and delete data, so they must
+# match a whole imperative command - not a substring. "I'll never forget that trip" and
+# "don't forget that" previously erased the user's most recent memory.
+_LEAD_IN = r"^(?:ok(?:ay)?|hey|yeah|kodi|jarvis|now|actually)?[\s,]*(?:(?:can|could|would) you )?(?:please )?"
+_TRAIL = r"[\s.!,?]*$"
 
-    if re.search(r"forget\s+everything|delete\s+all\s+memories", t):
+FORGET_LAST_RE = re.compile(
+    _LEAD_IN + r"forget (?:that|it|this|the last (?:one|thing|bit|memory)|what i just said)" + _TRAIL,
+    re.IGNORECASE,
+)
+# A bare "delete everything" / "erase everything" is too ambiguous to wipe memory on
+# (it could mean a chat, a file, a list), so those forms must name memory explicitly.
+FORGET_ALL_RE = re.compile(
+    _LEAD_IN
+    + r"(?:"
+    + r"forget everything(?: about me)?"
+    + r"|(?:delete|erase|wipe)(?: all| everything)?(?: of)?(?: my)? memor(?:y|ies)"
+    + r")"
+    + _TRAIL,
+    re.IGNORECASE,
+)
+
+
+def _forget_preprocess(transcript: str, user_id: str) -> str | None:
+    t = transcript.strip()
+    now = time.time()
+
+    if FORGET_ALL_RE.match(t):
         deadline = _forget_all_pending_until.get(user_id, 0.0)
-        if deadline > now and CONFIRM_FORGET_ALL.search(transcript):
-            _forget_all_pending_until.pop(user_id, None)
-            return memory_forget_all(user_id)
         if deadline > now:
             return "Say confirm delete everything to erase all memories, or wait for this prompt to expire."
         _forget_all_pending_until[user_id] = now + 180.0
         return "This removes all memories on your server. Say confirm delete everything within three minutes to proceed."
+
+    if CONFIRM_FORGET_ALL.search(t) and _forget_all_pending_until.get(user_id, 0.0) > now:
+        _forget_all_pending_until.pop(user_id, None)
+        return memory_forget_all(user_id)
+
+    if FORGET_LAST_RE.match(t):
+        return memory_forget_last(user_id)
     return None
 
 
@@ -290,7 +331,9 @@ async def session_audio(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Empty body")
 
     try:
-        transcript = transcribe_wav(wav_bytes)
+        # Whisper is a blocking HTTP call; running it inline would stall the event loop
+        # for the whole transcription and serialise every other request behind it.
+        transcript = await run_in_threadpool(transcribe_wav, wav_bytes)
     except HTTPException:
         raise
     except Exception as exc:
@@ -353,7 +396,10 @@ async def briefing(
 
     import anthropic
 
-    mem_block = memory_search(device_id, "morning briefing daily plans calendar", limit=8)
+    # Chroma + the embedding call are blocking; keep them off the event loop.
+    mem_block = await run_in_threadpool(
+        memory_search, device_id, "morning briefing daily plans calendar", 8
+    )
     ctx = _decode_client_context(body.context or None)
     sections: list[str] = []
     if ctx:
@@ -368,11 +414,11 @@ async def briefing(
     user_body = "\n\n".join(sections)
 
     try:
-        client = anthropic.Anthropic(
+        client = anthropic.AsyncAnthropic(
             api_key=settings.anthropic_api_key,
             timeout=settings.llm_timeout_seconds,
         )
-        resp = client.messages.create(
+        resp = await client.messages.create(
             model=settings.anthropic_model,
             max_tokens=400,
             temperature=0.5,

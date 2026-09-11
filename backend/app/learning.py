@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from .config import get_settings
-from .memory_service import get_memory, memory_search
+from .memory_service import get_memory, memory_get_all, memory_search
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +126,7 @@ def compact_lessons(device_id: str) -> None:
         return
     ns = lessons_namespace(device_id)
     try:
-        out = mem.get_all(user_id=ns)
-        results = out.get("results") or []
+        results = memory_get_all(ns)
         if len(results) <= LESSON_COMPACT_TRIGGER:
             return
         lessons = [r.get("memory") or r.get("text") or "" for r in results]

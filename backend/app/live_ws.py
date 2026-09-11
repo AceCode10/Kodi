@@ -10,7 +10,8 @@ Wire protocol (phone <-> backend):
   phone -> backend
     binary frame              : raw PCM16 mono 16 kHz mic audio
     {"type":"tool_result","id":..,"content":..,"isError":bool}
-    {"type":"interrupt"}      : user requested barge-in / stop
+    {"type":"interrupt"}      : explicit "stop talking" (not yet sent by the Android
+                                client - ordinary barge-in is handled by server VAD)
     {"type":"end"}            : end the session
   backend -> phone
     binary frame              : raw PCM16 24 kHz audio to play
@@ -143,11 +144,11 @@ async def live(websocket: WebSocket) -> None:
                     if fut and not fut.done():
                         fut.set_result(obj)
                 elif ctype == "interrupt":
-                    # Server-side VAD usually handles barge-in; this is an explicit stop.
-                    try:
-                        await session.send_realtime_input(audio_stream_end=True)
-                    except Exception:
-                        logger.debug("interrupt send_realtime_input failed", exc_info=True)
+                    # Explicit "stop talking" from the user. Gemini has no cancel-generation
+                    # call, and audio_stream_end would end the user's *input* stream rather
+                    # than the model's output - so just tell the phone to drop queued audio.
+                    # Server-side VAD still handles ordinary barge-in on its own.
+                    await _safe_send_json(websocket, {"type": "interrupted"})
                 elif ctype == "end":
                     raise WebSocketDisconnect()
 

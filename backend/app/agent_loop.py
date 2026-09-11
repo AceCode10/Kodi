@@ -73,8 +73,17 @@ def _execute_server_tool_impl(
         q = tool_input.get("query") or ""
         return memory_search(user_id, q, limit=5) or "No matching memories."
     if name == "call_home_assistant":
+        from .devices_store import GRANT_HOME_ASSISTANT, has_grant
         from .home_assistant import call_home_assistant
 
+        # Home Assistant runs on server-wide credentials, so holding a device
+        # credential must not be enough on its own to actuate the user's home.
+        if not has_grant(get_settings().devices_store_path, user_id, GRANT_HOME_ASSISTANT):
+            return (
+                "This device is not allowed to control Home Assistant. Grant it on the "
+                "server: set HOME_ASSISTANT_AUTO_GRANT=true and re-pair, or add \"home_assistant\" "
+                "to this device's grants in the device store."
+            )
         op = tool_input.get("operation") or ""
         kwargs = {k: v for k, v in tool_input.items() if k != "operation"}
         return call_home_assistant(op, **kwargs)
@@ -126,113 +135,6 @@ def _finish(state: Any, text: str) -> dict[str, Any]:
     return {"status": "done", "assistant_text": clean}
 
 
-def run_agent_step(state: Any) -> dict[str, Any]:
-    settings = get_settings()
-    if not settings.anthropic_api_key:
-        return {"status": "error", "message": "LLM not configured (ANTHROPIC_API_KEY)."}
-
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key, timeout=settings.llm_timeout_seconds)
-
-    max_inner = 16
-    for _ in range(max_inner):
-        if state.tools_used_this_command >= settings.max_tools_per_command:
-            return _finish(state, "I hit the tool limit for this command; try a shorter request.")
-
-        try:
-            response = client.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=1024,
-                temperature=0.3,
-                system=KODI_SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=state.claude_messages,
-            )
-        except Exception as exc:
-            logger.exception("claude messages.create failed")
-            return {"status": "error", "message": f"LLM failed: {exc!s}."}
-
-        content = response.content
-        tool_blocks = [b for b in content if (b.type if hasattr(b, "type") else b.get("type")) == "tool_use"]
-        text_parts = []
-        for block in content:
-            btype = block.type if hasattr(block, "type") else block.get("type")
-            if btype == "text":
-                text_parts.append(block.text if hasattr(block, "text") else block.get("text", ""))
-
-        if not tool_blocks:
-            return _finish(state, "".join(text_parts))
-
-        if len(tool_blocks) > 1:
-            logger.warning("Multiple tool_use blocks; processing the first only")
-        block = tool_blocks[0]
-
-        filtered: list[dict[str, Any]] = []
-        tool_seen = False
-        for b in content:
-            btype = b.type if hasattr(b, "type") else b.get("type")
-            if btype == "text":
-                filtered.append(_block_to_dict(b))
-            elif btype == "tool_use":
-                if tool_seen:
-                    continue
-                tool_seen = True
-                filtered.append(_block_to_dict(b))
-        with state.lock:
-            state.claude_messages.append({"role": "assistant", "content": filtered})
-
-        name = _tool_name(block)
-        tid = _tool_id(block)
-        inp = _tool_input(block)
-
-        if name in DEVICE_TOOL_NAMES:
-            state.tools_used_this_command += 1
-            state.pending_device_since = time.time()
-            state.pending_device_tool = {"tool_use_id": tid, "name": name, "input": inp}
-            return {
-                "status": "device_action",
-                "tool_use_id": tid,
-                "tool_name": name,
-                "tool_input": inp,
-            }
-
-        if name in SERVER_TOOL_NAMES:
-            state.tools_used_this_command += 1
-            out = _execute_server_tool(
-                name,
-                inp,
-                transcript=state.last_transcript,
-                user_id=state.device_id,
-            )
-            truncated_out = out[:6000] if len(out) > 6000 else out
-            with state.lock:
-                if _is_error_result(truncated_out):
-                    state.had_error = True
-                state.claude_messages.append(
-                    {
-                        "role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": tid, "content": truncated_out}],
-                    }
-                )
-            continue
-
-        with state.lock:
-            state.claude_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": tid,
-                            "content": f"Unknown tool {name}.",
-                            "is_error": True,
-                        }
-                    ],
-                }
-            )
-
-    return {"status": "error", "message": "Too many agent steps."}
-
-
 _SENTENCE_RE = re.compile(r"(.+?[.!?]+)(\s+)", re.S)
 
 
@@ -250,7 +152,11 @@ def _drain_sentences(buffer: str) -> tuple[list[str], str]:
 
 
 def _append_filtered_assistant(state: Any, content: Any) -> None:
-    """Append the assistant message keeping at most the first tool_use block (mirrors run_agent_step)."""
+    """Append the assistant message keeping at most the first tool_use block.
+
+    Dropping the rest disables parallel tool use and costs a round trip per tool;
+    the shared agent core replaces this with full multi-call handling.
+    """
     filtered: list[dict[str, Any]] = []
     tool_seen = False
     for b in content:
@@ -267,7 +173,7 @@ def _append_filtered_assistant(state: Any, content: Any) -> None:
 
 
 def run_agent_step_streaming(state: Any) -> Iterator[dict[str, Any]]:
-    """Generator variant of run_agent_step. Yields SSE-shaped event dicts:
+    """Run one agent turn, yielding SSE-shaped event dicts:
 
     {"type":"delta","text":...} | {"type":"device_action",...} |
     {"type":"done","assistant_text":...} | {"type":"error","message":...}
