@@ -1,0 +1,93 @@
+{
+  "_comment": [
+    "Shared expectations for the contact-matching ladder, exercised by BOTH",
+    "backend/evals/test_fake_device.py and android/.../DeviceToolExecutorTest.kt.",
+    "The ladder is implemented twice (Python for the eval's FakeDevice, Kotlin on the",
+    "device) and this file is what stops the two drifting apart unnoticed.",
+    "",
+    "These cases pin CURRENT behaviour, including behaviour that is arguably wrong -",
+    "cases tagged \"sharp_edge\" are recorded so a future change to them is a deliberate",
+    "decision with a failing test, not an accident."
+  ],
+  "cases": [
+    {
+      "id": "exact_beats_prefix",
+      "contacts": [["Amara", "+260971111111"], ["Amara Banda", "+260972222222"]],
+      "needle": "Amara",
+      "expected": "+260971111111",
+      "why": "An exact name match wins over a longer name that merely starts with it."
+    },
+    {
+      "id": "exact_is_case_insensitive",
+      "contacts": [["Amara Banda", "+260972222222"]],
+      "needle": "amara banda",
+      "expected": "+260972222222",
+      "why": "Matching lowercases both sides."
+    },
+    {
+      "id": "prefix_beats_contains",
+      "contacts": [["Bwalya Phiri", "+260973333333"], ["John Bwalya", "+260974444444"]],
+      "needle": "Bwalya",
+      "expected": "+260973333333",
+      "why": "A name starting with the needle wins over one merely containing it."
+    },
+    {
+      "id": "needle_starts_with_stored_name",
+      "contacts": [["Dan", "+260975555555"]],
+      "needle": "Dan Mwansa",
+      "expected": "+260975555555",
+      "tags": ["sharp_edge"],
+      "why": "needle.startsWith(name) counts as a prefix match, so a short stored name absorbs a longer spoken one. Loose, but load-bearing when a contact is saved by first name only."
+    },
+    {
+      "id": "contains_requires_three_chars",
+      "contacts": [["Chanda", "+260976666666"]],
+      "needle": "an",
+      "expected": null,
+      "why": "The contains tier is guarded at 3 characters so short fragments cannot match half the address book."
+    },
+    {
+      "id": "contains_matches_at_three_chars",
+      "contacts": [["Chanda", "+260976666666"]],
+      "needle": "han",
+      "expected": "+260976666666",
+      "why": "At exactly 3 characters the contains tier engages."
+    },
+    {
+      "id": "bare_number_passes_through",
+      "contacts": [],
+      "needle": "+260 97 123 4567",
+      "expected": "+260971234567",
+      "why": "A number is used directly, with spaces stripped, without touching the address book."
+    },
+    {
+      "id": "plain_digits_pass_through",
+      "contacts": [["Amara", "+260971111111"]],
+      "needle": "0971234567",
+      "expected": "0971234567",
+      "why": "Digits are treated as a number even when contacts exist."
+    },
+    {
+      "id": "no_match_returns_null",
+      "contacts": [["Amara", "+260971111111"]],
+      "needle": "Mutale",
+      "expected": null,
+      "why": "An unknown name resolves to nothing, so the caller can ask rather than guess."
+    },
+    {
+      "id": "number_stored_with_spaces_is_normalised",
+      "contacts": [["Amara", "+260 97 111 1111"]],
+      "needle": "Amara",
+      "expected": "+260971111111",
+      "why": "Stored numbers have spaces stripped before use."
+    },
+    {
+      "id": "ambiguous_within_tier_takes_first",
+      "contacts": [["Chola Banda", "+260977777777"], ["Chola Mwale", "+260978888888"]],
+      "needle": "Chola",
+      "expected": "+260977777777",
+      "tags": ["sharp_edge"],
+      "why": "Two contacts tie on the prefix tier and the first seen wins. On-device that order comes from the ContentResolver cursor, so which of two equally-good contacts is picked is not actually deterministic. Recorded here to make the ambiguity visible; resolving it properly means asking the user."
+    }
+  ]
+}

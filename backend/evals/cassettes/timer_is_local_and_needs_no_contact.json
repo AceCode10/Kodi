@@ -1,0 +1,51 @@
+{
+  "case_id": "timer_is_local_and_needs_no_contact",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "set_timer",
+          "input": {
+            "duration_seconds": 600
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "f2a3b4a81e269ad4036fb099026e35321bd9b4f8e6cd8df3c7d03f29284bb4ba",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "set a timer for ten minutes"
+      }
+    },
+    {
+      "text_chunks": [
+        "Timer set for ten minutes."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Timer set for ten minutes."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "4cb41deb007a11be678ab9672dfa8caa61f33f3a8dc94c797f2554faa1f0607a",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Timer set for 10m .\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "case_id": "unknown_contact_asks_rather_than_guesses",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "get_contacts",
+          "input": {
+            "name": "Mutale"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "879fad960760f065f84fe92a1c046f67e3296ec18b9180beba5e71b29ff496ef",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "text Mutale that I'll be there at six"
+      }
+    },
+    {
+      "text_chunks": [
+        "I can't find Mutale in your contacts. What's the right name?"
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "I can't find Mutale in your contacts. What's the right name?"
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "14d9d046c9ef3218ac1d1b0d09b6f7c7c792d9d4eb6f013468a331422af65b53",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"No contact named Mutale.\", \"is_error\": true}]"
+      }
+    }
+  ]
+}

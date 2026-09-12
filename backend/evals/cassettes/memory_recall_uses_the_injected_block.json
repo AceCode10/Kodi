@@ -1,0 +1,52 @@
+{
+  "case_id": "memory_recall_uses_the_injected_block",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "send_whatsapp_message",
+          "input": {
+            "contact": "Amara",
+            "message": "On my way"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "c67ca262494a8006eb70db8288a71d8a557a882c9e78edc61b10ea0f9b889436",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "[Context from memory]\n- The user's sister is Amara\n- The user prefers WhatsApp over SMS\n\n\nUser said: text my sister that I'm on my way"
+      }
+    },
+    {
+      "text_chunks": [
+        "Messaged Amara that you're on your way."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Messaged Amara that you're on your way."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "e89efd50d8c99c94d1626e5c52f89d434c9849e1a5ab5e1a53eb0e470a0d5442",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Sent WhatsApp to Amara.\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

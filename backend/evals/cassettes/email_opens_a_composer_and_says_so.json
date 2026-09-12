@@ -1,0 +1,53 @@
+{
+  "case_id": "email_opens_a_composer_and_says_so",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "send_email",
+          "input": {
+            "to": "sam@example.com",
+            "subject": "Meeting notes",
+            "body": "Notes attached."
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "f1dede186ef9c95b4d052113c4270a385ffd0d4638a15e7bf1a35843f9645ba1",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "email sam@example.com the meeting notes"
+      }
+    },
+    {
+      "text_chunks": [
+        "I've drafted that email to Sam - it's ready for you to send."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "I've drafted that email to Sam - it's ready for you to send."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "360a186ed46c4bc586c23e392a6403cabeed9c63ed719c2c68e0a8dd6439409e",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Opened email composer to sam@example.com.\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

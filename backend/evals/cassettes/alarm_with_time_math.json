@@ -1,0 +1,52 @@
+{
+  "case_id": "alarm_with_time_math",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "set_alarm",
+          "input": {
+            "hour": 6,
+            "minute": 15
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "6cb2a1527b8fd705c5a4e5b6dd4473a8bec6ecc4c9a32b5b18a8c6bbf17d6ed6",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "[Current client context]\n- time: 2026-09-12T22:10:00+02:00\n- timezone: Africa/Lusaka\n- day of week: Saturday\n\nUser said: wake me up at quarter past six tomorrow"
+      }
+    },
+    {
+      "text_chunks": [
+        "Alarm set for quarter past six."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Alarm set for quarter past six."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "3dc6f515d687f1d5823561d2d76280aabe840e1ccf89ec77c8607151765585aa",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Alarm set for 06:15.\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

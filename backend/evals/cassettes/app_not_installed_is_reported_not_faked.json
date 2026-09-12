@@ -1,0 +1,52 @@
+{
+  "case_id": "app_not_installed_is_reported_not_faked",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "send_telegram_message",
+          "input": {
+            "contact": "Amara",
+            "message": "hello"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "6b86a671bb9c8a45f2cd0cb822b278e7d548227bd9b690f94ff329e4f4db2490",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "send Amara a telegram saying hello"
+      }
+    },
+    {
+      "text_chunks": [
+        "Telegram isn't installed, so I couldn't send that."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Telegram isn't installed, so I couldn't send that."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "a3f18915242cbcfd2003ac6eced0b30ca511002fcfbe677ac6b05f8e5713c8bb",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Telegram not installed.\", \"is_error\": true}]"
+      }
+    }
+  ]
+}

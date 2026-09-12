@@ -1,0 +1,51 @@
+{
+  "case_id": "call_contact",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "make_phone_call",
+          "input": {
+            "contact": "Amara"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "bd3a261d8a694a7661c4beeeb20361fa29b04d50f3e7011f25b9fe252bb7f628",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "call Amara"
+      }
+    },
+    {
+      "text_chunks": [
+        "Calling Amara."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Calling Amara."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "0f0d758af9ddb12460bbb785f1d66d45d672d7394fe6ed330884cd7abd27404b",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Calling Amara.\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

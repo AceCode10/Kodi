@@ -1,0 +1,52 @@
+{
+  "case_id": "sms_running_late",
+  "model": "synthetic",
+  "synthetic": true,
+  "interactions": [
+    {
+      "text_chunks": [],
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "tu_1",
+          "name": "send_whatsapp_message",
+          "input": {
+            "contact": "Amara",
+            "message": "Running late, sorry!"
+          }
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "b1812b3c5cb11aa0919bbebbfaed18736fc86a88a2f9b26fa4dafb1e67de4f72",
+      "preview": {
+        "n_messages": 1,
+        "last_message": "[Current client context]\n- time: 2026-09-12T08:30:00+02:00\n- timezone: Africa/Lusaka\n- day of week: Saturday\n\nUser said: text Amara that I'm running late"
+      }
+    },
+    {
+      "text_chunks": [
+        "Told Amara you're running late."
+      ],
+      "content": [
+        {
+          "type": "text",
+          "text": "Told Amara you're running late."
+        }
+      ],
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 20
+      },
+      "model": "scripted",
+      "request_key": "05633a19b9cac6e1e3832eb8d554a2111534a10c013a501aa17753ed9c087f62",
+      "preview": {
+        "n_messages": 3,
+        "last_message": "[{\"type\": \"tool_result\", \"tool_use_id\": \"tu_1\", \"content\": \"Sent WhatsApp to Amara.\", \"is_error\": false}]"
+      }
+    }
+  ]
+}

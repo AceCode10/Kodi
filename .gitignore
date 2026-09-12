@@ -21,3 +21,7 @@ android/local.properties
 # OS
 .DS_Store
 Thumbs.db
+
+# Eval run output. Cassettes (backend/evals/cassettes/) ARE committed - they are the
+# behavioural baseline - but per-run results and traces are regenerated, not reviewed.
+.claude/hillclimb/
