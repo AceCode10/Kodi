@@ -85,7 +85,11 @@ def match_contact(candidates: list[tuple[str, str]], needle: str) -> str | None:
     `fixtures/contact_matching.json` so they cannot drift apart unnoticed.
     """
     trimmed = needle.strip()
-    if trimmed and all(c.isdigit() or c in "+ " for c in trimmed):
+    # An empty needle must resolve to nothing: "".startswith on any name is True, so it
+    # would otherwise prefix-match whichever contact came first.
+    if not trimmed:
+        return None
+    if all(c.isdigit() or c in "+ " for c in trimmed):
         return "".join(c for c in trimmed if c.isdigit() or c == "+")
 
     lowered = trimmed.lower()

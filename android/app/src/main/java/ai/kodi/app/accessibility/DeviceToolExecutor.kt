@@ -573,35 +573,75 @@ object DeviceToolExecutor {
         return texts.lastOrNull()
     }
 
-    private fun resolvePhone(context: Context, contact: String): String? {
-        val trimmed = contact.trim()
+    /**
+     * The contact-matching ladder: exact name, then prefix, then contains.
+     *
+     * Pure so it can be tested on the JVM - picking the wrong person is one of this
+     * app's worst failure modes and it was previously only reachable through a
+     * ContentResolver. The eval suite implements the same ladder in Python for its
+     * device double; both are held to `backend/evals/fixtures/contact_matching.json`
+     * so they cannot drift apart.
+     *
+     * Candidate order matters when two contacts tie within a tier - the first wins -
+     * and on-device that order comes from the cursor. See the fixture's notes.
+     */
+    internal fun matchContact(candidates: List<Pair<String, String>>, needle: String): String? {
+        val trimmed = needle.trim()
+        // An empty needle must resolve to nothing. Two ways it used to resolve to
+        // something: `"".all { ... }` is true, so it fell through the digits branch and
+        // returned ""; and `anyName.startsWith("")` is also true, so it prefix-matched
+        // whichever contact the cursor happened to return first.
+        if (trimmed.isEmpty()) return null
         if (trimmed.all { it.isDigit() || it == '+' || it.isWhitespace() }) {
             return trimmed.filter { it.isDigit() || it == '+' }
         }
-        val cr = context.contentResolver
-        val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+        val lowered = trimmed.lowercase()
+        var exact: String? = null
+        var prefix: String? = null
+        var contains: String? = null
+        for ((name, number) in candidates) {
+            if (name.isEmpty() || number.isEmpty()) continue
+            val lowName = name.lowercase()
+            val clean = number.replace(" ", "")
+            when {
+                lowName == lowered -> if (exact == null) exact = clean
+                lowName.startsWith(lowered) || lowered.startsWith(lowName) ->
+                    if (prefix == null) prefix = clean
+                lowered.length >= 3 && lowName.contains(lowered) ->
+                    if (contains == null) contains = clean
+            }
+        }
+        return exact ?: prefix ?: contains
+    }
+
+    /** Read (display name, number) pairs in cursor order. */
+    private fun readContacts(context: Context): List<Pair<String, String>> {
+        val out = mutableListOf<Pair<String, String>>()
         val proj = arrayOf(
             ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
             ContactsContract.CommonDataKinds.Phone.NUMBER,
         )
-        val needle = trimmed.lowercase()
-        var exactMatch: String? = null
-        var prefixMatch: String? = null
-        var containsMatch: String? = null
-        cr.query(uri, proj, null, null, null)?.use { c ->
+        context.contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI, proj, null, null, null,
+        )?.use { c ->
             val nameIdx = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val numIdx = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
             while (c.moveToNext()) {
-                val name = c.getString(nameIdx)?.lowercase() ?: continue
-                val num = c.getString(numIdx)?.replace(" ", "") ?: continue
-                when {
-                    name == needle -> if (exactMatch == null) exactMatch = num
-                    name.startsWith(needle) || needle.startsWith(name) -> if (prefixMatch == null) prefixMatch = num
-                    needle.length >= 3 && name.contains(needle) -> if (containsMatch == null) containsMatch = num
-                }
+                val name = c.getString(nameIdx) ?: continue
+                val num = c.getString(numIdx) ?: continue
+                out.add(name to num)
             }
         }
-        return exactMatch ?: prefixMatch ?: containsMatch
+        return out
+    }
+
+    private fun resolvePhone(context: Context, contact: String): String? {
+        val trimmed = contact.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.all { it.isDigit() || it == '+' || it.isWhitespace() }) {
+            return trimmed.filter { it.isDigit() || it == '+' }
+        }
+        return matchContact(readContacts(context), trimmed)
     }
 
     private suspend fun sendTelegram(context: Context, input: JsonObject): String {
