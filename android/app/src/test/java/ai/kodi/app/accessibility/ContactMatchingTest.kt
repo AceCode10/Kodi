@@ -4,7 +4,6 @@ import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 
@@ -24,15 +23,20 @@ class ContactMatchingTest {
 
     @Test
     fun sharedFixtureCasesAllHold() {
+        // Deliberately a failure rather than an assumption: a skipped test still passes
+        // the build, so an unresolvable fixture would silently stop checking the thing
+        // this test exists for.
         val fixture = findFixture()
-        assumeTrue(
-            "shared fixture not found (expected at backend/evals/fixtures/contact_matching.json)",
-            fixture != null,
-        )
+            ?: throw AssertionError(
+                "shared fixture not found. Looked for backend/evals/fixtures/" +
+                    "contact_matching.json walking up from ${File(".").absolutePath}",
+            )
 
-        val cases = JsonParser.parseString(fixture!!.readText())
+        val cases = JsonParser.parseString(fixture.readText())
             .asJsonObject.getAsJsonArray("cases")
         assertTrue("fixture should not be empty", cases.size() > 0)
+        // Guards against a fixture that loads but has quietly lost its cases.
+        assertTrue("fixture should cover the ladder", cases.size() >= 10)
 
         for (element in cases) {
             val case = element.asJsonObject
@@ -111,7 +115,7 @@ class ContactMatchingTest {
     /** Walk up from the working directory to find the repo-shared fixture. */
     private fun findFixture(): File? {
         var dir: File? = File(".").absoluteFile
-        repeat(6) {
+        repeat(8) {
             val candidate = File(dir, "backend/evals/fixtures/contact_matching.json")
             if (candidate.isFile) return candidate
             dir = dir?.parentFile
